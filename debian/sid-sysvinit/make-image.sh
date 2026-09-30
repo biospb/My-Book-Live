@@ -69,6 +69,10 @@ cat > "$TARGET/etc/fstab" <<-'EOF'
 EOF
 mkdir -p "$TARGET/DataVolume"
 
+# UTF-8 without the locales package: C.UTF-8 is built into glibc (otherwise mc/ls show ???)
+echo 'LANG=C.UTF-8' > "$TARGET/etc/default/locale"
+echo 'export LANG=C.UTF-8' > "$TARGET/etc/profile.d/locale.sh"
+
 # DHCP on eth0 (from build-rootfs.sh); resolv.conf is written by dhcpcd
 : > "$TARGET/etc/resolv.conf"
 
