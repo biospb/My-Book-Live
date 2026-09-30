@@ -29,10 +29,12 @@ KEYRING=/usr/share/keyrings/debian-ports-archive-keyring.gpg
 # No udev: the 4.19 kernel has DEVTMPFS_MOUNT. No IPv6: disabled in the 4.19 config.
 # No openssh-server: OpenSSH >= 10 requires seccomp for its preauth sandbox and the 4.19 kernel
 # is built without CONFIG_SECCOMP, so every login fails; dropbear does not need it.
+# opensysusers instead of systemd-standalone-sysusers: systemd >= 262 needs statx STATX_MNT_ID
+# (kernel 5.8, backported in 4.19.325-mbl), opensysusers works on any kernel.
 PACKAGES="sysvinit-core sysv-rc initscripts orphan-sysvinit-scripts \
-	systemd-standalone-sysusers systemd-standalone-tmpfiles \
+	opensysusers systemd-standalone-tmpfiles \
 	ifupdown dhcpcd-base iproute2 iputils-ping netbase \
-	dropbear openssh-sftp-server openssh-client samba nfs-kernel-server rpcbind \
+	dropbear openssh-sftp-server openssh-client samba nfs-kernel-server rpcbind wsdd2 \
 	smartmontools hdparm e2fsprogs cron chrony rsyslog logrotate \
 	less vim-tiny htop procps psmisc ethtool iperf3 wget ca-certificates \
 	u-boot-tools libubootenv-tool debian-ports-archive-keyring"
