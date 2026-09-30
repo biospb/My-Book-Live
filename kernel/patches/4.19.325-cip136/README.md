@@ -40,3 +40,12 @@ During an SMB write the CPU is 100% busy: sys 67%, softirq 30%, user 2.4% (smbd 
 `iperf3 -s -F file` (TCP rx + write() to ext4, no SMB) gives the same 534 Mbit/s = 67 MB/s,
 pure iperf3 rx 940 Mbit/s: the limit is the kernel rx + copy + ext4 path, not Samba.
 `min receivefile size` 0 vs 16384 makes no difference (67.5 vs 67.1).
+
+### MAL rx interrupt coalescing (`ethtool -C eth0 rx-frames N`, GRO on, 2 runs each)
+
+| rx-frames / rx-usecs | 32 / 500 (default) | 64 / 500 | 128 / 500 | 256 / 500 | 64 / 250 | 64 / 1000 |
+|---|---|---|---|---|---|---|
+| SMB write, MB/s | 66.2 | 68.8 | 68.3 | 69.0 | 64.8 | 68.2 |
+
+Reads stay at 105-106. rx-frames 64 is set from `/etc/rc.local` (the Kconfig default
+`CONFIG_IBM_EMAC_RX_COAL_COUNT=32` is unchanged).
