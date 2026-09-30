@@ -59,3 +59,16 @@ kernel had one 32-byte cache line replaced by stale memory contents. The prefetc
 buffer that a device is writing by DMA at that moment (the cache is invalidated only when the DMA is
 mapped), so the CPU later reads the stale cached line. `__copy_tofrom_user()` stops prefetching before
 the end of the source for this reason. Not worth fixing for a gain that only shows with the splice shim.
+
+### Hang protection (config only, release `-wd`, config `config/.config.4.19.325-cip136-mbl-wd`)
+
+`CONFIG_DETECT_HUNG_TASK` with `DEFAULT_HUNG_TASK_TIMEOUT=180` and `BOOTPARAM_HUNG_TASK_PANIC`, plus
+`SOFTLOCKUP_DETECTOR` with `BOOTPARAM_SOFTLOCKUP_PANIC`. With `panic=10` from boot.scr a hung boot
+reboots and boot.scr switches system after two failed boots; before, a kernel that came up with a hung
+disk (e.g. the 64K-page test: endless ata2 DMA timeouts) never reached rc.local, so confirm-ssh never
+rebooted it. Only a task stuck in D state without being scheduled for 180 s counts, normal heavy I/O
+does not: 3x2 GB SMB write+read gave no warning and the same speed (67.4 / 104.7 MB/s). Tested with
+`sysctl kernel.hung_task_timeout_secs=20; fsfreeze -f /DataVolume; touch /DataVolume/x` -> panic after
+23 s, reboot, boot confirmed. The Book E hardware watchdog is not used: on 44x its longest period is
+2^29 timebase ticks (~0.67 s at 800 MHz), too short for a userspace pinger on a loaded, non-preemptible
+kernel.
