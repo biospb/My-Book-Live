@@ -1,0 +1,24 @@
+From 92e101828147bd1ed7174ed126450f743566ec45 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 04:58:24 +0300
+Subject: [PATCH 02/11] powerpc: build 44x/4xx with -mcpu=464fp
+
+Original: ewaldc My-Book-Live kernel/patches/4.19/009_ppc464_makefile.patch
+---
+ arch/powerpc/Makefile | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/powerpc/Makefile b/arch/powerpc/Makefile
+index daddada1a390..63b0c24514a1 100644
+--- a/arch/powerpc/Makefile
++++ b/arch/powerpc/Makefile
+@@ -251,7 +251,8 @@ ifdef CONFIG_6xx
+ KBUILD_CFLAGS		+= -mcpu=powerpc
+ endif
+ 
+-cpu-as-$(CONFIG_4xx)		+= -Wa,-m405
++#cpu-as-$(CONFIG_4xx)		+= -Wa,-m405
++cpu-as-$(CONFIG_4xx)		+= -mcpu=464fp -Wa,-m464
+ cpu-as-$(CONFIG_ALTIVEC)	+= $(call as-option,-Wa$(comma)-maltivec)
+ cpu-as-$(CONFIG_E500)		+= -Wa,-me500
+ 

@@ -1,0 +1,25 @@
+From 36741a9a43420a3b75bfc95309cf6ca1de22fbe9 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:40:55 +0300
+Subject: [PATCH 03/18] Revert "ata: sata_dwc_460ex: fix clear_interrupt_bit()
+ clearing all pending interrupts"
+
+This reverts commit b801ac8f69f2a9d1687612b0ba8acf00cb4325e0.
+---
+ drivers/ata/sata_dwc_460ex.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index 6d40c05e6493..7e6ed7bb623e 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -447,7 +447,8 @@ static void clear_serror(struct ata_port *ap)
+ 
+ static void clear_interrupt_bit(struct sata_dwc_device *hsdev, u32 bit)
+ {
+-	sata_dwc_writel(&hsdev->sata_dwc_regs->intpr, bit);
++	sata_dwc_writel(&hsdev->sata_dwc_regs->intpr,
++			sata_dwc_readl(&hsdev->sata_dwc_regs->intpr));
+ }
+ 
+ static u32 qcmd_tag_to_mask(u8 tag)

@@ -1,0 +1,96 @@
+From 0d81415b75922bf7f382db2258d174bc567632e9 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:01:05 +0300
+Subject: [PATCH 14/18] ata: sata_dwc_460ex: fix bugs found in the APM821xx
+ rework
+
+- set err_mask when the device reports ATA_ERR (the command completed as
+  good, hiding media errors and failed FLUSH CACHE)
+- NEWFP: use ata_qc_from_tag() again so a late DMA Setup FIS cannot start
+  DMA into a completed command; mask the tag to 5 bits
+- skip interrupts for polled commands (IDENTIFY, SET FEATURES) again
+- return IRQ_NONE for an empty INTPR so stuck IRQ detection works
+- allocate hsdev with devm_kzalloc instead of uncached OCM (was memset
+  before the NULL check and never freed)
+---
+ drivers/ata/sata_dwc_460ex.c | 23 +++++++++++++++--------
+ 1 file changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index 8a60b3aaebfd..c49f5f78bbfe 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -590,14 +590,16 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 	if (intpr & SATA_DWC_INTPR_NEWFP) {
+ 		clear_interrupt_bit(dwc_regs, SATA_DWC_INTPR_NEWFP);
+ 
+-		tag = (u8)(sata_dwc_readl(&dwc_regs->fptagr));
++		tag = (u8)(sata_dwc_readl(&dwc_regs->fptagr) & 0x1f);
+ 		dev_dbg(ap->dev, "%s: NEWFP tag=%d\n", __func__, tag);
+ 		if (unlikely(hsdevp->cmd_issued[tag] != SATA_DWC_CMD_ISSUED_PEND))
+ 			dev_warn(ap->dev, "CMD tag=%d not pending?\n", tag);
+ 
+ 		hsdev->sactive_issued |= tag_to_mask(tag);
+ 
+-		qc = &ap->qcmd[tag];  // we know tag is a valid one
++		/* ata_qc_from_tag() returns NULL for a command that is no longer active:
++		 * a late NEWFP must not start DMA into a completed command's buffer */
++		qc = ata_qc_from_tag(ap, tag);
+ 		if (unlikely(!qc)) {
+ 			dev_warn(ap->dev, "No QC available for tag %d (intpr=0x%08x, qc_active=0xl%08llx)\n", 
+ 				tag, intpr, ap->qc_active);
+@@ -623,7 +625,9 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 		qc = &ap->qcmd[tag];   // Get qc from tag (ata_qc_from_tag(ap, tag);)
+ 
+ 		/* DEV interrupt w/ no active qc? */
+-		if (unlikely(!qc || ((qc->flags & (ATA_QCFLAG_ACTIVE | ATA_QCFLAG_FAILED)) != ATA_QCFLAG_ACTIVE))) {
++		/* libata polls IDENTIFY and SET FEATURES itself: never run the HSM for them here */
++		if (unlikely(!qc || ((qc->flags & (ATA_QCFLAG_ACTIVE | ATA_QCFLAG_FAILED)) != ATA_QCFLAG_ACTIVE) ||
++			     (qc->tf.flags & ATA_TFLAG_POLLING))) {
+ 			dev_err(ap->dev,
+ 				"%s interrupt with no active qc qc=%p\n", __func__, qc);
+ 			ap->ops->sff_check_status(ap);
+@@ -636,6 +640,8 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "interrupt ATA_ERR (0x%x)\n", status);
++			/* report the device error: without it the command completed as good */
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(qc, tag, hsdev);
+ 			goto DONE;
+ 		}
+@@ -714,6 +720,7 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "%s ATA_ERR (0x%x)\n", __func__,
+ 				status);
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(qc, tag, hsdev);
+ 			goto DONE;
+ 		}
+@@ -754,7 +761,8 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 
+ DONE:
+ 	spin_unlock_irqrestore(&host->lock, flags);
+-	return IRQ_RETVAL(1);
++	/* IRQ_NONE for an empty INTPR keeps the kernel's stuck/spurious IRQ detection working */
++	return IRQ_RETVAL(intpr != 0);
+ }
+ 
+ static void sata_dwc_dma_xfer_complete(struct ata_port *ap, u32 check_status)
+@@ -1166,13 +1174,12 @@ static int sata_dwc_probe(struct platform_device *ofdev)
+ 	struct device *dp = &ofdev->dev;
+ 	struct device_node *np = dp->of_node;
+ 	struct resource *res;
+-	phys_addr_t	phys;
+ 
+ 	/* Allocate DWC SATA device */
+ 	host = ata_host_alloc_pinfo(dp, ppi, SATA_DWC_MAX_PORTS);
+-	hsdev = ppc4xx_ocm_alloc(&phys, sizeof(*hsdev), 4, PPC4XX_OCM_NON_CACHED, "sata_dwc_device");
+-	memset(hsdev, 0, sizeof(*hsdev));
+-	//hsdev = devm_kzalloc(dp, sizeof(*hsdev), GFP_KERNEL);
++	/* Ordinary (cached) memory like upstream: the uncached OCM copy was memset before the NULL
++	 * check, was never freed, and made every field access an uncached PLB load */
++	hsdev = devm_kzalloc(dp, sizeof(*hsdev), GFP_KERNEL);
+ 	if (!host || !hsdev)
+ 		return -ENOMEM;
+ 

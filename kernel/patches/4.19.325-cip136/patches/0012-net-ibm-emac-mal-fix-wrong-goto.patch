@@ -1,0 +1,23 @@
+From f361963e9070d5ae23504aea67307314256dcc44 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:01:05 +0300
+Subject: [PATCH 12/18] net: ibm: emac: mal: fix wrong goto
+
+Re-applies upstream 4bd7823cacb2 (4.19.y) to the reworked mal.c
+---
+ drivers/net/ethernet/ibm/emac/mal.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index 3c3c8bd6df4c..4fd2ff049eca 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -995,7 +995,7 @@ static int mal_probe(struct platform_device *ofdev) {
+ #else
+ 		printk(KERN_ERR "%pOF: Support for 405EZ not enabled!\n", np);
+ 		err = -ENODEV;
+-		goto fail;
++		goto fail_unmap;
+ #endif
+ 	}
+ 

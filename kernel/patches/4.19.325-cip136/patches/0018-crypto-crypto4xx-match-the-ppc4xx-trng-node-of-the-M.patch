@@ -1,0 +1,25 @@
+From 87989eeecb10bedbb750127a7fb2f400ec0be16a Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Wed, 30 Sep 2026 06:12:17 +0300
+Subject: [PATCH 18/18] crypto: crypto4xx: match the ppc4xx-trng node of the My
+ Book Live dtb
+
+The apollo3g.dtb names the TRNG node "ppc4xx-trng", which the driver
+does not match, so /dev/hwrng stays without a source and the CRNG waits
+for interrupt entropy at boot.
+---
+ drivers/crypto/amcc/crypto4xx_trng.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/crypto/amcc/crypto4xx_trng.c b/drivers/crypto/amcc/crypto4xx_trng.c
+index 8a3ed4031206..7eda1e37c845 100644
+--- a/drivers/crypto/amcc/crypto4xx_trng.c
++++ b/drivers/crypto/amcc/crypto4xx_trng.c
+@@ -66,6 +66,7 @@ static void ppc4xx_trng_enable(struct crypto4xx_device *dev, bool enable)
+ 
+ static const struct of_device_id ppc4xx_trng_match[] = {
+ 	{ .compatible = "ppc4xx-rng", },
++	{ .compatible = "ppc4xx-trng", },	/* apollo3g.dtb (My Book Live) */
+ 	{ .compatible = "amcc,ppc460ex-rng", },
+ 	{ .compatible = "amcc,ppc440epx-rng", },
+ 	{},

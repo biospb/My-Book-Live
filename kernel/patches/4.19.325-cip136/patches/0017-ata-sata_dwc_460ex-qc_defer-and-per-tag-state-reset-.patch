@@ -1,0 +1,52 @@
+From 5e826c2b2d1e10aaa875e7db450913c8e5100556 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Wed, 30 Sep 2026 06:12:17 +0300
+Subject: [PATCH 17/18] ata: sata_dwc_460ex: qc_defer and per-tag state reset
+ on hardreset
+
+- use ata_std_qc_defer (ata_sff_port_ops has none), so libata never
+  queues a second command while one is active;
+- clear sactive_issued/queued and the per-tag cmd_issued/dma_pending
+  state on hardreset: EH has failed every command by then and stale
+  state could make the ISR act on a tag that no longer exists.
+
+Idea from ewaldc's unfinished sata_dwc_ncq driver (May 2019).
+---
+ drivers/ata/sata_dwc_460ex.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index a30638ebd69c..aaf78280398f 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -1078,10 +1078,21 @@ static int sata_dwc_hardreset(struct ata_link *link, unsigned int *class,
+ 			      unsigned long deadline)
+ {
+ 	struct sata_dwc_device *hsdev = HSDEV_FROM_AP(link->ap);
+-	int ret;
++	struct sata_dwc_device_port *hsdevp = HSDEVP_FROM_AP(link->ap);
++	int ret, i;
+ 
+ 	ret = sata_sff_hardreset(link, class, deadline);
+ 
++	/* EH has failed all commands: forget per-tag state left behind */
++	hsdev->sactive_issued = 0;
++	hsdev->sactive_queued = 0;
++	if (hsdevp) {
++		for (i = 0; i < SATA_DWC_QCMD_MAX; i++) {
++			hsdevp->cmd_issued[i] = SATA_DWC_CMD_ISSUED_NOT;
++			hsdevp->dma_pending[i] = SATA_DWC_DMA_PENDING_NONE;
++		}
++	}
++
+ 	sata_dwc_enable_interrupts(hsdev);
+ 
+ 	/* Reconfigure the DMA control register */
+@@ -1128,6 +1139,7 @@ static struct scsi_host_template sata_dwc_sht = {
+ static struct ata_port_operations sata_dwc_ops = {
+ 	.inherits		= &ata_sff_port_ops,
+ 
++	.qc_defer		= ata_std_qc_defer,
+ 	.error_handler		= sata_dwc_error_handler,
+ 	.hardreset		= sata_dwc_hardreset,
+ 

@@ -1,0 +1,24 @@
+From 45471b0ae80a4289d146b75e6c305a018776aaca Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 04:58:24 +0300
+Subject: [PATCH 01/11] powerpc/4xx: ocm: fix inverted debugfs_create_file
+ check
+
+Original: ewaldc My-Book-Live kernel/patches/4.19/002_ppc4xx_ocm.patch
+---
+ arch/powerpc/platforms/4xx/ocm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/powerpc/platforms/4xx/ocm.c b/arch/powerpc/platforms/4xx/ocm.c
+index 69d9f60d9fe5..2b00b37906cd 100644
+--- a/arch/powerpc/platforms/4xx/ocm.c
++++ b/arch/powerpc/platforms/4xx/ocm.c
+@@ -299,7 +299,7 @@ static int ocm_debugfs_init(void)
+ 		return -1;
+ 	}
+ 
+-	if (debugfs_create_file("info", 0644, junk, NULL, &ocm_debugfs_fops)) {
++	if (!debugfs_create_file("info", 0644, junk, NULL, &ocm_debugfs_fops)) {
+ 		printk(KERN_ALERT "debugfs ppc4xx ocm: failed to create file\n");
+ 		return -1;
+ 	}

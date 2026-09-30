@@ -1,0 +1,162 @@
+From c2008fb1753fb44cf683625a6927fa47263c619d Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:01:05 +0300
+Subject: [PATCH 09/11] net: ibm: emac: fix bugs found in the APM821xx rework
+
+- rx_sg_append(): clear the caller's rx_sg_skb after dropping an oversized
+  scatter-gather frame (was the local copy: use-after-free / double free)
+- mal_poll(): poll_commac is NULL after ifdown, do not dereference it
+- peek_rx_sg(): index the descriptor ring instead of stepping a u16 pointer
+  by sizeof(descriptor), which skipped every other descriptor and ran past
+  the end of the ring
+- emac_rx_enable(): operator precedence kept only the RXI bit of MR0 and the
+  following write cleared TXE, stopping transmission
+- watchdog_timeo back to 5 s (was 100 s)
+- TSO via TAH: add ndo_features_check() and fall back to software GSO when
+  the segment size the stack chose does not match TAH SSR0
+---
+ drivers/net/ethernet/ibm/emac/core.c | 35 ++++++++++++++++++++++++----
+ drivers/net/ethernet/ibm/emac/mal.c  | 26 ++++++++++++++-------
+ 2 files changed, 48 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/core.c b/drivers/net/ethernet/ibm/emac/core.c
+index f8d7303e8c91..c87c286a52e1 100644
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -251,7 +251,9 @@ inline void emac_rx_enable(struct emac_instance *dev) {
+ 	if (!(r & EMAC_MR0_RXE)) {
+ 		if (unlikely(!(r & EMAC_MR0_RXI))) { // Wait if previous async disable is still in progress
+ 			int n = dev->stop_timeout;
+-			while (!(r = in_be32(&p->mr0) & EMAC_MR0_RXI) && n--) udelay(1);
++			/* keep the whole MR0 in r: without the parentheses r was only the RXI bit and
++			 * the write below cleared TXE and the other mode bits, stopping transmission */
++			while (!((r = in_be32(&p->mr0)) & EMAC_MR0_RXI) && n--) udelay(1);
+ 			if (unlikely(!n)) emac_report_timeout_error(dev, "RX disable timeout");
+ 		}
+ 		out_be32(&p->mr0, r | EMAC_MR0_RXE);
+@@ -1560,7 +1562,7 @@ static __always_inline int emac_rx_sg_append(struct emac_instance *dev, int slot
+ 		if (unlikely(tot_len + NET_IP_ALIGN > dev->rx_skb_size)) {
+ 			++dev->estats.rx_dropped_mtu;
+ 			dev_kfree_skb(skb_sgp);
+-            skb_sg = NULL;
++			*skb_sg = NULL;	/* the caller's pointer, not the local copy: avoids use-after-free */
+ 		} else {  //ECO
+ 			//if(unlikely((dev->rx_sg_skb->tail + len) > dev->rx_sg_skb->end)) goto out;
+ 			memcpy(skb_tail_pointer(skb_sgp), data, len);	// dev->rx_skb[slot]->data
+@@ -2836,6 +2838,30 @@ static int emac_init_config(struct emac_instance *dev) {
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ static void emac_netpoll(struct net_device *dev){}
+ #endif
++
++#if defined(CONFIG_IBM_EMAC_TAH) && defined(EMAC_HW_TSO)
++/* TAH cuts TSO frames into IP packets of the size in SSR0 (emac_tx_csum always selects it),
++ * not into the MSS the stack chose for the connection. Let the stack segment in software
++ * whenever the two differ, e.g. peers behind a VPN/PPPoE link or after PMTU discovery. */
++static netdev_features_t emac_features_check(struct sk_buff *skb, struct net_device *ndev,
++					     netdev_features_t features)
++{
++	struct emac_instance *dev = netdev_priv(ndev);
++
++	if (skb_is_gso(skb)) {
++		unsigned int ip_len = skb_transport_offset(skb) - skb_network_offset(skb) +
++				      tcp_hdrlen(skb) + skb_shinfo(skb)->gso_size;
++
++		if (!dev->ssr || ip_len != dev->ssr[0] || ip_len > ndev->mtu)
++			features &= ~NETIF_F_GSO_MASK;
++	}
++	return features;
++}
++#define EMAC_FEATURES_CHECK	.ndo_features_check = emac_features_check,
++#else
++#define EMAC_FEATURES_CHECK
++#endif
++
+ static const struct net_device_ops emac_netdev_ops = {
+ 	.ndo_open		= emac_open,
+ 	.ndo_stop		= emac_close,
+@@ -2846,6 +2872,7 @@ static const struct net_device_ops emac_netdev_ops = {
+ 	.ndo_validate_addr	= eth_validate_addr,
+ 	.ndo_set_mac_address	= emac_set_mac_address,
+ 	.ndo_start_xmit		= emac_start_xmit,
++	EMAC_FEATURES_CHECK
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	.ndo_poll_controller	= emac_netpoll,
+ #endif
+@@ -2862,6 +2889,7 @@ static const struct net_device_ops emac_gige_netdev_ops = {
+ 	.ndo_set_mac_address	= emac_set_mac_address,
+ 	.ndo_start_xmit		= emac_start_xmit_sg,
+ 	.ndo_change_mtu		= emac_change_mtu,
++	EMAC_FEATURES_CHECK
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	.ndo_poll_controller	= emac_netpoll,
+ #endif
+@@ -3026,8 +3054,7 @@ static int emac_probe(struct platform_device *ofdev) {
+ #endif
+ 		ndev->features |= ndev->hw_features | NETIF_F_RXCSUM;
+ 	}
+-	//ndev->watchdog_timeo = 5 * HZ;
+-	ndev->watchdog_timeo = 100 * HZ;
++	ndev->watchdog_timeo = 5 * HZ;	/* was 100 s: a stalled TX was only recovered after that long */
+ 	if (emac_phy_supports_gige(dev->phy_mode)) {
+ 		ndev->netdev_ops = &emac_gige_netdev_ops;
+ 		dev->commac.ops = &emac_commac_sg_ops;
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index 4fd2ff049eca..ad8e755e6401 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -531,7 +531,7 @@ static __always_inline int rx_sg_append(struct emac_instance *dev, int slot, int
+ 		if (unlikely(tot_len + NET_IP_ALIGN > dev->rx_skb_size)) {
+ 			++dev->estats.rx_dropped_mtu;
+ 			dev_kfree_skb(skb_sgp);
+-            skb_sg = NULL;
++			*skb_sg = NULL;	/* the caller's pointer, not the local copy: avoids use-after-free */
+ 		} else {  //ECO
+ 			//if(unlikely((dev->rx_sg_skb->tail + len) > dev->rx_sg_skb->end)) goto out;
+ 			memcpy(skb_tail_pointer(skb_sgp), data, len);	// dev->rx_skb[slot]->data
+@@ -765,14 +765,20 @@ static __always_inline void poll_tx(struct emac_instance *dev) {
+ 
+ /* NAPI poll context */
+ static __always_inline int peek_rx_sg(struct emac_instance *dev) {
+-	register int slot = dev->rx_slot;  // start will last used slot
+-    register u16 *rx_desc_ctrl = (u16 *)&dev->rx_desc[slot];
++	int slot = dev->rx_slot;	/* start with the last used slot */
++
++	/* Index the ring instead of stepping a u16 pointer by sizeof(descriptor):
++	 * that skipped every other descriptor and ran past the end of the ring */
+ 	while (1) {
+-        if (*rx_desc_ctrl & MAL_RX_CTRL_EMPTY) return 0;
+-		else if (unlikely(*rx_desc_ctrl & MAL_RX_CTRL_LAST)) return 1;
++		u16 ctrl = dev->rx_desc[slot].ctrl;
++
++		if (ctrl & MAL_RX_CTRL_EMPTY)
++			return 0;
++		if (unlikely(ctrl & MAL_RX_CTRL_LAST))
++			return 1;
+ 		slot = NXT_RX_SLOT(slot);
+-        rx_desc_ctrl += sizeof(struct mal_descriptor);
+-        if (unlikely(slot == 0)) rx_desc_ctrl = (u16 *) &dev->rx_desc[0]; //wrap around
++		if (unlikely(slot == dev->rx_slot))	/* whole ring walked */
++			return 0;
+ 	}
+ }
+ 
+@@ -785,7 +791,8 @@ static int mal_poll(struct napi_struct *napi, int budget) {
+ #if defined (CONFIG_APM821xx) // APM821xx has just a single EMAC/MAL RX/TX channel
+     #define continue_if(x)
+     register struct mal_commac *mc = mal->poll_commac;
+-    register struct emac_instance *dev = mc->dev;
++    /* poll_commac is NULL after ifdown (mal_poll_del) while a late MAL interrupt can still schedule us */
++    register struct emac_instance *dev = likely(mc) ? mc->dev : NULL;
+ #else
+     #define continue_if(x) if (x) continue
+ 	struct list_head *l;
+@@ -802,7 +809,8 @@ static int mal_poll(struct napi_struct *napi, int budget) {
+         struct emac_instance *dev = mc->dev;
+ #endif
+ 		//mc->ops->poll_tx(dev); // Poll if we have something to transmit
+-		poll_tx(dev);
++		if (likely(dev))
++			poll_tx(dev);
+         //mal->poll_tx = 0;
+  	}
+ 

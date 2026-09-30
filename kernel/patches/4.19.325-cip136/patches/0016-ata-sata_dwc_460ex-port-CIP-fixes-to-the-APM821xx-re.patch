@@ -1,0 +1,89 @@
+From 5e2fa558fc696c2a44bcc30e6a3055a20e461c66 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:41:19 +0300
+Subject: [PATCH 16/18] ata: sata_dwc_460ex: port CIP fixes to the APM821xx
+ rework
+
+Our rework replaces the driver that CIP v4.19.325-cip136 fixed in
+eacddeab898e, 60076ded69ae, b801ac8f69f2 and 1eb6109e7f43 (reverted
+before applying the rework).  Port the same fixes:
+
+- clear_interrupt_bit() cleared every pending interrupt instead of the
+  requested bit, which could drop an ERR arriving with NEWFP;
+- scan the NCQ completion mask with __ffs() instead of shifting the mask
+  (infinite loop for any tag other than 0) and skip tags without a qc;
+- drop the unused num_processed;
+- enable SATA interrupts only after ata_host_activate() has registered
+  the handler, and fail the probe if activation fails.
+---
+ drivers/ata/sata_dwc_460ex.c | 26 +++++++++++---------------
+ 1 file changed, 11 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index c49f5f78bbfe..a30638ebd69c 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -473,7 +473,7 @@ static __always_inline void clear_serror(struct sata_dwc_device *hsdev)
+ //static inline void clear_interrupt_bit(struct sata_dwc_device *hsdev, u32 bit)
+ static __always_inline void clear_interrupt_bit(struct sata_dwc_regs __iomem *dwc_regs, u32 bit)
+ {
+-	sata_dwc_writel(&dwc_regs->intpr, sata_dwc_readl(&dwc_regs->intpr));
++	sata_dwc_writel(&dwc_regs->intpr, bit);
+ }
+ 
+ #define tag_to_mask_compl(tag) (0xFFFFFFFE << ((tag) & 0x1f))
+@@ -568,7 +568,6 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 	struct ata_queued_cmd *qc;
+ 	unsigned long flags;
+ 	u8 status, tag;
+-	int num_processed;
+ 	uint intpr, sactive, sactive2, tag_mask;
+ 	hsdev->sactive_issued = 0;
+ 
+@@ -700,17 +699,12 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 	status = ap->ops->sff_check_status(ap);
+ 	dev_dbg(ap->dev, "%s ATA status register=0x%x\n", __func__, status);
+ 
+-	tag = 0;
+-	num_processed = 0;
+ 	while (tag_mask) {
+-		num_processed++;
+-		while (!(tag_mask & 0x00000001)) {
+-			tag++;
+-			tag_mask <<= 1;
+-		}
+-
+-		tag_mask &= (~0x00000001);
++		tag = __ffs(tag_mask);
++		tag_mask &= ~(1U << tag);
+ 		qc = ata_qc_from_tag(ap, tag);
++		if (unlikely(!qc))
++			continue;
+ 
+ 		/* To be picked up by completion functions */
+ 		qc->ap->link.active_tag = tag;
+@@ -1212,9 +1206,6 @@ static int sata_dwc_probe(struct platform_device *ofdev)
+ 	/* Save dev for later use in dev_xxx() routines */
+ 	hsdev->dev = dp;
+ 
+-	/* Enable SATA Interrupts */
+-	sata_dwc_enable_interrupts(hsdev);
+-
+ 	/* Get SATA interrupt number */
+ 	irq = irq_of_parse_and_map(np, 0);
+ 	if (irq == NO_IRQ) {
+@@ -1244,8 +1235,13 @@ static int sata_dwc_probe(struct platform_device *ofdev)
+ 	 * error_handler() to execute a dummy Softreset EH session
+ 	 */
+ 	err = ata_host_activate(host, irq, sata_dwc_isr, 0, &sata_dwc_sht);
+-	if (err)
++	if (err) {
+ 		dev_err(dp, "failed to activate host");
++		goto error_out;
++	}
++
++	/* Enable SATA Interrupts only once the handler is registered */
++	sata_dwc_enable_interrupts(hsdev);
+ 
+ 	return 0;
+ 

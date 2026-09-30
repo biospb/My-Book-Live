@@ -1,0 +1,32 @@
+From ad3826edecb661a435c142ad45468d390ff6a07e Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Wed, 30 Sep 2026 05:40:55 +0300
+Subject: [PATCH 01/18] Revert "ata: sata_dwc_460ex: fix infinite loop in NCQ
+ tag completion bit-scanning"
+
+This reverts commit eacddeab898edffee0dc19324aaffdd9c72bd080.
+---
+ drivers/ata/sata_dwc_460ex.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index 6cf2ffbb76b7..21fa4cbc1be2 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -654,9 +654,14 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 	status = ap->ops->sff_check_status(ap);
+ 	dev_dbg(ap->dev, "%s ATA status register=0x%x\n", __func__, status);
+ 
++	tag = 0;
+ 	while (tag_mask) {
+-		tag = __ffs(tag_mask);
+-		tag_mask &= ~(1U << tag);
++		while (!(tag_mask & 0x00000001)) {
++			tag++;
++			tag_mask <<= 1;
++		}
++
++		tag_mask &= (~0x00000001);
+ 		qc = ata_qc_from_tag(ap, tag);
+ 
+ 		/* To be picked up by completion functions */
