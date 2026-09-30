@@ -33,7 +33,8 @@ You will need to update `/etc/network/if-up.d/tuneperf` to use Jumbo packets or 
 
 ## Kernels for Debian sid (2026) ##
 Built with gcc 12 from the series in [../patches/4.19.325-cip136](../patches/4.19.325-cip136/README.md) and [../patches/4.19.325](../patches/4.19.325/README.md) (16K pages, like 4.19.99). Validated on a single-disk MBL with Debian sid + sysvinit, booted with `libata.force=noncq rng_core.default_quality=700`.
-* __linux-4.19.325-cip136-st20-mbl.tgz__ (recommended): CIP SLTS base with the audit fixes, SECCOMP, sock_diag, `/proc/config.gz`, gpio LEDs, POSIX ACLs, crypto4xx TRNG, statx mount-id backport.
+* __linux-4.19.325-cip136-st20-mbl-gro.tgz__ (recommended): the cip136 kernel below plus patch 0019 (emac GRO), SMB write 61 -> 67 MB/s.
+* __linux-4.19.325-cip136-st20-mbl.tgz__: CIP SLTS base with the audit fixes, SECCOMP, sock_diag, `/proc/config.gz`, gpio LEDs, POSIX ACLs, crypto4xx TRNG, statx mount-id backport.
 * __linux-4.19.325-mbl.tgz__: the same on the last kernel.org 4.19 release, without the CIP fixes and without patches 0017/0018 of the CIP series.
 
 Each archive contains `boot/uImage_<release>`, `boot/apollo3g.dtb` (= `../dts/apollo3g.dtb`), `boot/config-<release>` and `lib/modules/<release>`. Use `tar -xzf` from `/` and point u-boot at the uImage (see [../../uboot/boot_multi](../../uboot/boot_multi/README.md)).

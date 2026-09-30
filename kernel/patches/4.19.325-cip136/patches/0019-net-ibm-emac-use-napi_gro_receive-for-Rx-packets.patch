@@ -1,0 +1,47 @@
+From d863dda4ea6e3097750ad707c8bbd30ab632350c Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Wed, 30 Sep 2026 20:35:10 +0300
+Subject: [PATCH] net: ibm: emac: use napi_gro_receive() for Rx packets
+
+The rx path already runs in NAPI context and TAH marks verified frames
+CHECKSUM_UNNECESSARY, so GRO can merge TCP segments into large skbs and
+the stack is traversed once per super-skb instead of once per frame.
+Same idea as OpenWrt apm821xx 710-net-ibm_emac-Use-napi_gro_receive-for-Rx-packets.
+
+GRO is flushed by napi_complete_done() in mal_poll() and can be turned
+off at runtime with "ethtool -K eth0 gro off".
+
+---
+ drivers/net/ethernet/ibm/emac/core.c | 2 +-
+ drivers/net/ethernet/ibm/emac/mal.c  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/core.c b/drivers/net/ethernet/ibm/emac/core.c
+index c87c286a52e1..298e1b1ce003 100644
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -1625,7 +1625,7 @@ static int emac_poll_rx(void *param, int budget) {
+ 		skb->protocol = eth_type_trans(skb, dev->ndev);
+ 		emac_rx_csum(dev, skb, ctrl);
+ 
+-		if (unlikely(netif_receive_skb(skb) == NET_RX_DROP)) ++dev->estats.rx_dropped_stack;
++		if (unlikely(napi_gro_receive(&dev->mal->napi, skb) == GRO_DROP)) ++dev->estats.rx_dropped_stack;
+ 	next:
+ 		++dev->stats.rx_packets;
+ 	skip:
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index ad8e755e6401..6f63547648a1 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -621,7 +621,7 @@ static int __always_inline poll_rx(void *param, int budget) {
+ 		skb->protocol = eth_type_trans(skb, dev->ndev);
+ 		rx_csum(dev, skb, ctrl);
+ 
+-		if (unlikely(netif_receive_skb(skb) == NET_RX_DROP)) ++dev->estats.rx_dropped_stack;
++		if (unlikely(napi_gro_receive(&dev->mal->napi, skb) == GRO_DROP)) ++dev->estats.rx_dropped_stack;
+ 	next:
+ 		++dev->stats.rx_packets;
+ 	skip:
+-- 
+2.43.0
+

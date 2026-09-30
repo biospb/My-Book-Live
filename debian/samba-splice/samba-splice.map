@@ -1,0 +1,4 @@
+SMBCONF_0.0.1 {
+	global: sys_recvfile;
+	local: *;
+};
