@@ -1,6 +1,22 @@
 # UPDATE: My development MBL which died is back alive
 During kernel 5.4 Asynchronuous DMA driver work, my MBL died over 18 months ago.  Apperently u-boot and/or u-boot variables were corrupted.  In a nothing-to-lose-effort, I managed to unsolder a chip and reflash it.
 
+# 2026 update (this fork)
+Current setup of a single-disk MBL (3 TB), everything validated on the device in September 2026:
+
+* __Kernel 4.19.325-cip136-mbl__: ewaldc's 4.19 patch set rebased onto the [CIP](https://wiki.linuxfoundation.org/civilinfrastructureplatform/start) SLTS tree (4.19 still maintained, fixes backported from 5.10), reduced to what is still needed and with the bugs found in an audit fixed (EMAC use-after-free, TSO, sata_dwc error handling, CVE-2022-49073 via upstream).  Adds SECCOMP, sock_diag (`ss`), `/proc/config.gz`, gpio LEDs, POSIX ACLs, the crypto4xx TRNG and a statx mount-id backport needed by current systemd tools.  See [kernel/patches/4.19.325-cip136](kernel/patches/4.19.325-cip136/README.md), audit in [kernel/patches/4.19/audit](kernel/patches/4.19/audit).
+* __Debian sid with sysvinit__ on the 4.19 kernel (systemd >= 258 needs kernel >= 5.4): rootfs built on a PC with debootstrap + qemu-user, dropbear, Samba 4.25, wsdd2, NFS, chrony, LED status service.  See [debian/sid-sysvinit](debian/sid-sysvinit).
+* __Multiboot with automatic fallback__ (Debian / OpenWrt 25.12 rescue / test kernel), selected from the running system with `mbl-boot`; two unconfirmed boots switch to the other system.  See [uboot/boot_multi](uboot/boot_multi/README.md).
+* __Samba__ tuned for Samba 4.25: [samba/smb-sid.conf](samba/smb-sid.conf).  Benchmark scripts and results: [bench](bench).
+
+| (1 GbE, Windows client, 2 GiB file) | SMB write / read | disk dd write / read | TCP rx / tx |
+|---|---|---|---|
+| Jessie + 4.19.99 + Samba 4.2 | 58 / 100 MB/s | 115 / 121 MB/s | 853 / 903 Mbit/s |
+| OpenWrt 25.12 (6.12, stock drivers) | 34 / 35 MB/s | 68 / 77 MB/s | 615 / 527 Mbit/s |
+| sid + 4.19.325-cip136-mbl + Samba 4.25 | 62 / 106 MB/s | 96-115 / 112-123 MB/s | 930 / 985 Mbit/s |
+
+NCQ stays disabled (`libata.force=noncq`): the sata_dwc driver runs with queue depth 1 anyway, so it costs nothing.
+
 # My-Book-Live (MBL) customization
 Kernel patches and Debian release for Western Digital My Book Live.</br>
 __NOTE__: these customizations will void your warranty and are delivered on best-effort only</br>
@@ -25,6 +41,7 @@ __NOTE__: none of this work is tested on a My Book Live DUO for the simple reaso
 * __kernel__: Kernel patches, pre-compiled kernels and device tree structure
 * __samba__ : Optimal perfomance with Samba using sample config files
 * __uboot__ : Netconsole support, u-boot boot files, TFTP boot and ways to safely boot My Book Live
+* __bench__ : SMB (Windows, robocopy) and on-device disk benchmark scripts with results
 
 Documentation is posted within each section.
 
@@ -32,6 +49,7 @@ Documentation is posted within each section.
 * Kernel 2.6.32.71, released Sat, 12 Mar 2016<br>
 * Kernel 4.9.169, released Wed, 17 Apr 2019<br>
 * Kernel 4.19.99, released Mon, 27 Jan 2020
+* Kernel 4.19.325-cip136 (CIP SLTS), Sept 2026
 
 
 ## What is new ? ##
@@ -48,4 +66,4 @@ Documentation is posted within each section.
 * update on Debian sources.list (package repositories)
 
 ## Known issues ##
-* (Disk activity) led not working on 4.19 kernels 
+* (Disk activity) led not working on 4.19 kernels (4.19.325-mbl: LEDs available as `/sys/class/leds/mbl:*:power`; on the author's unit of this fork only the red element still works) 
