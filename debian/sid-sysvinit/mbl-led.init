@@ -1,0 +1,42 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          mbl-led
+# Required-Start:    $local_fs $remote_fs $syslog
+# Required-Stop:     $local_fs $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: My Book Live front LED status indicator (red only)
+### END INIT INFO
+
+DAEMON=/usr/local/sbin/mbl-led
+PIDFILE=/run/mbl-led.pid
+
+[ -x "$DAEMON" ] || exit 0
+. /lib/lsb/init-functions
+
+case "$1" in
+	start)
+		log_daemon_msg "Starting LED status indicator" "mbl-led"
+		start-stop-daemon --start --quiet --background --make-pidfile --pidfile "$PIDFILE" \
+			--startas /bin/bash -- "$DAEMON"
+		log_end_msg $?
+		;;
+	stop)
+		log_daemon_msg "Stopping LED status indicator" "mbl-led"
+		start-stop-daemon --stop --quiet --retry 5 --pidfile "$PIDFILE"
+		rm -f "$PIDFILE"
+		"$DAEMON" stop
+		log_end_msg 0
+		;;
+	restart|force-reload)
+		$0 stop
+		$0 start
+		;;
+	status)
+		"$DAEMON" status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|force-reload|status}" >&2
+		exit 1
+		;;
+esac

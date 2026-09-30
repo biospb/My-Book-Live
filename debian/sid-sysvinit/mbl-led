@@ -1,0 +1,116 @@
+#!/bin/bash
+# Status indicator on the My Book Live front LED. Only the red element of the tri-color LED
+# works on this unit, so the state is shown by the red LED alone:
+#   off                     everything is fine
+#   short flash every 5 s   warning: SMART reallocated/pending sectors
+#   fast blinking           error: SMART health failed, DATA not mounted read-write, SSH not answering
+#   steady on               booting / shutting down (set here on stop; u-boot also leaves it on)
+#
+#   mbl-led           run the monitor (started by /etc/init.d/mbl-led)
+#   mbl-led status    print the current state and the reasons
+#   mbl-led demo      show each pattern for 10 s
+
+DATA=${DATA:-/DataVolume}
+DISK=${DISK:-/dev/sda}
+SMART_EVERY=${SMART_EVERY:-1800}   # seconds between SMART checks
+CHECK_EVERY=${CHECK_EVERY:-30}     # seconds between the other checks
+RED_GPIO=476                       # latch at 0x4e0000000, bit 4
+
+# LED access: leds-gpio if the kernel has it, otherwise the GPIO line through sysfs
+led_file=$(ls -d /sys/class/leds/*red* 2>/dev/null | head -1)
+if [ -n "$led_file" ]; then
+	echo none > "$led_file/trigger" 2>/dev/null
+	led_file=$led_file/brightness
+else
+	[ -d /sys/class/gpio/gpio$RED_GPIO ] || echo $RED_GPIO > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio$RED_GPIO/direction
+	led_file=/sys/class/gpio/gpio$RED_GPIO/value
+fi
+led() { echo "$1" > "$led_file"; }
+
+# Sub-second sleep without forking a process per pause: wait on a pipe that never delivers data
+exec {nap_fd}<> <(:)
+nap() { read -r -t "$1" -u "$nap_fd" 2>/dev/null || true; }
+
+smart_state=ok smart_reason=
+check_smart() {
+	local out rc
+	out=$(smartctl -n standby -H -A "$DISK" 2>/dev/null); rc=$?
+	(( rc & 2 )) && return                       # disk asleep or not accessible: keep last result
+	# rc bit 3 = "disk failing"; do not grep plain FAILED, the attribute table has a WHEN_FAILED column
+	if (( rc & 8 )) || grep -q 'self-assessment test result: FAILED' <<<"$out"; then
+		smart_state=error smart_reason="SMART health failed"
+		return
+	fi
+	local realloc pending
+	realloc=$(awk '$2 == "Reallocated_Sector_Ct" { print $10 }' <<<"$out")
+	pending=$(awk '$2 == "Current_Pending_Sector" { print $10 }' <<<"$out")
+	if (( ${realloc:-0} > 0 || ${pending:-0} > 0 )); then
+		smart_state=warn smart_reason="SMART: reallocated=${realloc:-0} pending=${pending:-0}"
+	else
+		smart_state=ok smart_reason=
+	fi
+}
+
+ssh_answers() {
+	local b
+	b=$(timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22 && head -c 4 <&3' 2>/dev/null)
+	[ "$b" = "SSH-" ]
+}
+
+# Sets $state (ok|warn|error) and $reasons
+evaluate() {
+	state=$smart_state reasons=$smart_reason
+	local opts
+	opts=$(awk -v m="$DATA" '$2 == m { print $4 }' /proc/mounts)
+	if [ -z "$opts" ]; then
+		state=error reasons="$reasons; $DATA not mounted"
+	elif [[ ",$opts," == *,ro,* ]]; then
+		state=error reasons="$reasons; $DATA mounted read-only"
+	fi
+	if ! ssh_answers; then
+		state=error reasons="$reasons; SSH not answering"
+	fi
+	reasons=${reasons#; }
+}
+
+show() {   # show pattern $1 for about $2 seconds
+	local end=$((SECONDS + $2))
+	while (( SECONDS < end )); do
+		case $1 in
+			ok)    led 0; nap 5 ;;
+			warn)  led 1; nap 0.15; led 0; nap 4.85 ;;
+			error) led 1; nap 0.25; led 0; nap 0.25 ;;
+			on)    led 1; nap 5 ;;
+		esac
+	done
+}
+
+case "$1" in
+	status)
+		check_smart; evaluate
+		echo "state=$state${reasons:+ ($reasons)}"
+		exit 0 ;;
+	demo)
+		for p in on ok warn error; do echo "$p"; show "$p" 10; done
+		led 0
+		exit 0 ;;
+	stop)
+		led 1
+		exit 0 ;;
+esac
+
+trap 'led 1; exit 0' TERM INT
+last_smart=-$SMART_EVERY last_state=
+while :; do
+	if (( SECONDS - last_smart >= SMART_EVERY )); then
+		check_smart
+		last_smart=$SECONDS
+	fi
+	evaluate
+	if [ "$state" != "$last_state" ]; then
+		logger -t mbl-led "state=$state${reasons:+ ($reasons)}"
+		last_state=$state
+	fi
+	show "$state" "$CHECK_EVERY"
+done
