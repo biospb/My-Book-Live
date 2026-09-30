@@ -1,0 +1,44 @@
+From 56285533a382562946d14149e362f0cd68fcaec8 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Thu, 1 Oct 2026 01:30:40 +0300
+Subject: [PATCH 20/21] dmaengine: dw: APM821xx: 8K blocks, a multiple of the
+ burst size
+
+max_block_size 4095 words (16380 bytes) is not a multiple of the 16-word
+(64 byte) burst. The second and later blocks of an sg segment therefore
+start off burst alignment and bursts cross the 8K Data FIS boundaries,
+which hangs the SATA controller. With 16K pages segments never exceed
+16K, the split is 16380 + 4 and nothing crosses; with 64K pages the block
+layer raises dma_boundary to PAGE_SIZE-1, segments reach 64K and every
+write of a large contiguous segment times out.
+
+Use 2048 words (8192 bytes), as ewaldc's 4.9 sata_dwc driver did.
+
+---
+ drivers/dma/dw/core.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/dma/dw/core.c b/drivers/dma/dw/core.c
+index b169a085fc5b..85ba45805038 100644
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -711,8 +711,14 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
+ #if defined(CONFIG_APM821xx)
+ 	#define 			mem_width 2
+ 	#define 			reg_width 2
+-	#define 			max_block_size 4095
+-	#define				max_block_bytes (max_block_size << 2) //16380
++	/*
++	 * Block size in 32-bit words: a multiple of the 16-word burst so that no
++	 * burst of a later block of the same sg segment crosses an 8K Data FIS
++	 * boundary (4095 words broke this as soon as segments exceeded 16K, i.e.
++	 * with 64K pages); 8192 bytes as in ewaldc's 4.9 sata_dwc driver.
++	 */
++	#define 			max_block_size 2048
++	#define				max_block_bytes (max_block_size << 2) //8192
+ #else
+ 	unsigned int		reg_width;
+ 	unsigned int		mem_width;
+-- 
+2.43.0
+

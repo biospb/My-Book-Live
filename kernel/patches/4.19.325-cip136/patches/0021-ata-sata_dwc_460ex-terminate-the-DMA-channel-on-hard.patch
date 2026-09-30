@@ -1,0 +1,50 @@
+From 67fd5fc76db9af1bb4610d27893a7e48c04e5510 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Thu, 1 Oct 2026 01:30:40 +0300
+Subject: [PATCH 21/21] ata: sata_dwc_460ex: terminate the DMA channel on
+ hardreset
+
+After a command timeout libata EH fails the command and resets the link,
+but nothing stops the dw DMA channel: the descriptor of the failed command
+stays on its active list, dwc_issue_pending() only starts a descriptor when
+that list is empty, and every later command times out too. EH then loops
+forever (seen with 64K pages).
+
+Terminate the channel at the start of hardreset and clear the per-tag
+descriptor pointers.
+
+---
+ drivers/ata/sata_dwc_460ex.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index aaf78280398f..4bed0be364a5 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -1081,6 +1081,15 @@ static int sata_dwc_hardreset(struct ata_link *link, unsigned int *class,
+ 	struct sata_dwc_device_port *hsdevp = HSDEVP_FROM_AP(link->ap);
+ 	int ret, i;
+ 
++	/*
++	 * EH has failed all commands, but a DMA descriptor of a timed out command
++	 * may still be active on the dw channel; the channel starts new
++	 * descriptors only when its active list is empty, so it would block every
++	 * later command. Drop it (no callbacks are run).
++	 */
++	if (hsdevp && !IS_ERR_OR_NULL(hsdevp->chan))
++		dmaengine_terminate_sync(hsdevp->chan);
++
+ 	ret = sata_sff_hardreset(link, class, deadline);
+ 
+ 	/* EH has failed all commands: forget per-tag state left behind */
+@@ -1090,6 +1099,7 @@ static int sata_dwc_hardreset(struct ata_link *link, unsigned int *class,
+ 		for (i = 0; i < SATA_DWC_QCMD_MAX; i++) {
+ 			hsdevp->cmd_issued[i] = SATA_DWC_CMD_ISSUED_NOT;
+ 			hsdevp->dma_pending[i] = SATA_DWC_DMA_PENDING_NONE;
++			hsdevp->desc[i] = NULL;
+ 		}
+ 	}
+ 
+-- 
+2.43.0
+

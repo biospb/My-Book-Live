@@ -13,6 +13,8 @@ About 380 CIP commits touch code built with this config (nfsd, ext4/jbd2, net, m
 | 0017 | sata_dwc: `ata_std_qc_defer`, reset per-tag state on hardreset |
 | 0018 | crypto4xx TRNG: match the `ppc4xx-trng` node of apollo3g.dtb (`/dev/hwrng` = crypto4xx) |
 | 0019 | emac: `napi_gro_receive()` instead of `netif_receive_skb()` (as OpenWrt apm821xx 710), SMB write +9% |
+| 0020 | dw dmaengine: 8K LLI blocks (a multiple of the burst), needed for PAGE_SIZE > 16K |
+| 0021 | sata_dwc: terminate the DMA channel on hardreset, so one DMA timeout cannot wedge all later commands |
 
 NCQ stays off (`libata.force=noncq`): the driver keeps queue depth 1, and ewaldc's experimental
 `4.9/sata_dwc_ncq.7z` driver was reviewed and rejected (early completion, wrong-tag DMA
@@ -72,3 +74,20 @@ does not: 3x2 GB SMB write+read gave no warning and the same speed (67.4 / 104.7
 23 s, reboot, boot confirmed. The Book E hardware watchdog is not used: on 44x its longest period is
 2^29 timebase ticks (~0.67 s at 800 MHz), too short for a userspace pinger on a loaded, non-preemptible
 kernel.
+
+### 0020/0021 and 64K pages
+
+With 64K pages the block layer raises the SATA `dma_boundary` 0x1fff to PAGE_SIZE-1, sg segments reach
+64K and the dw DMA split them into 16380-byte blocks (4095 words, not a multiple of the 64-byte burst):
+bursts of the later blocks crossed 8K Data FIS boundaries and every such write timed out. Because EH never
+stopped the dw channel, the stuck descriptor then blocked every later command (endless `ata2: hard
+resetting link`). ewaldc's 4.9 driver used 8192-byte LLIs.
+
+With 0020/0021 a 64K-page kernel (`-p21-64k`) boots and the disk works: 300 MB urandom write/read/cp on
+sda4 and 3.5 GB of reads on sda5 with correct MD5s, no ATA errors. 16K kernel with 0020/0021 (`-p21`):
+SMB 67.1 / 104.2 MB/s, dd 118 / 111 MB/s, 2 GB SMB write + local cp MD5 OK, i.e. unchanged.
+
+64K pages are still not usable: after mounting sda5 rw, `/etc/init.d/smbd restart` made the whole system
+unresponsive (ping answers, SSH banner does not, nothing on netconsole, no hung task / soft lockup
+panic) and it needed a power cycle. Memory was not short right after boot (65 MB used, 182 MB available).
+Cause not found.
