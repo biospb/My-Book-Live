@@ -49,3 +49,13 @@ pure iperf3 rx 940 Mbit/s: the limit is the kernel rx + copy + ext4 path, not Sa
 
 Reads stay at 105-106. rx-frames 64 is set from `/etc/rc.local` (the Kconfig default
 `CONFIG_IBM_EMAC_RX_COAL_COUNT=32` is unchanged).
+
+### Rejected: memcpy source prefetch (was 0020)
+
+Adding `dcbt` prefetch to `memcpy()` (as `__copy_tofrom_user()` has) made the splice shim path faster
+(64.5 -> 69.5 MB/s, plain Samba unchanged), but it **corrupts data**: a `cp` of a 3.4 MB file under that
+kernel had one 32-byte cache line replaced by stale memory contents. The prefetch ran up to
+`MAX_COPY_PREFETCH` lines past the end of the source; on the non-coherent 44x such a line can belong to a
+buffer that a device is writing by DMA at that moment (the cache is invalidated only when the DMA is
+mapped), so the CPU later reads the stale cached line. `__copy_tofrom_user()` stops prefetching before
+the end of the source for this reason. Not worth fixing for a gain that only shows with the splice shim.
