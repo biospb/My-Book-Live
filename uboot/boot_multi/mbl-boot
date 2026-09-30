@@ -1,0 +1,83 @@
+#!/bin/sh
+# Select the system the My Book Live boots next (see boot_multi.txt).
+#   mbl-boot                    show the current selection
+#   mbl-boot debian|owrt|test   select for the next boot (test = kernel in /boot/debian-test)
+#   mbl-boot debian now         select and reboot
+#   mbl-boot confirm-ssh [sec]  from rc.local: once SSH answers on localhost mark the boot as
+#                               successful (boot_count=0); if it does not answer in time, reboot,
+#                               so that boot.scr falls back to the other system after two tries;
+#                               while /etc/mbl-boot.noconfirm exists boot_count is never reset
+#   mbl-boot ok                 mark the boot as successful without checking
+
+log() { logger -t mbl-boot "$*" 2>/dev/null; echo "mbl-boot: $*"; }
+show() { fw_printenv bootsel boot_count; }
+
+# Never write when the environment cannot be read: with a wrong /etc/fw_env.config
+# fw_setenv would replace the whole u-boot environment with its built-in defaults.
+env_ok() {
+	out=$(fw_printenv bootcmd 2>&1)
+	case "$out" in
+		*[Bb]ad\ CRC*|*"Cannot "*|*rror*) log "u-boot environment not readable ($out), check /etc/fw_env.config"; return 1 ;;
+		bootcmd=*) return 0 ;;
+		*) log "unexpected fw_printenv output: $out"; return 1 ;;
+	esac
+}
+
+mark_ok() {
+	env_ok || return 1
+	[ "$(fw_printenv -n boot_count 2>/dev/null)" = 0 ] || fw_setenv boot_count 0 || return 1
+	log "boot confirmed, boot_count=0 (bootsel=$(fw_printenv -n bootsel 2>/dev/null))"
+}
+
+# Does the local SSH server send its "SSH-" banner?
+ssh_banner() {
+	if command -v bash >/dev/null 2>&1; then
+		b=$(timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22 && head -c 4 <&3' 2>/dev/null)
+	else
+		# OpenWrt busybox: nc has no -w and there is no timeout(1)
+		f=/tmp/.mbl-boot-banner
+		nc 127.0.0.1 22 </dev/null >"$f" 2>/dev/null &
+		p=$!
+		sleep 3
+		kill "$p" 2>/dev/null
+		b=$(head -c 4 "$f" 2>/dev/null)
+		rm -f "$f"
+	fi
+	[ "$b" = "SSH-" ]
+}
+
+case "$1" in
+	"") show; exit 0 ;;
+	ok) mark_ok; exit $? ;;
+	confirm-ssh)
+		left=${2:-120}
+		until ssh_banner; do
+			if [ "$left" -le 0 ]; then
+				log "no SSH banner after ${2:-120}s, rebooting (boot_count=$(fw_printenv -n boot_count 2>/dev/null))"
+				sync
+				reboot
+				exit 1
+			fi
+			sleep 5
+			left=$((left - 5))
+		done
+		# While a system is still being set up, keep counting its boots so that
+		# two reboots in a row fall back to the other system
+		if [ -e /etc/mbl-boot.noconfirm ]; then
+			log "SSH answers, but /etc/mbl-boot.noconfirm exists: boot_count stays $(fw_printenv -n boot_count 2>/dev/null)"
+			exit 0
+		fi
+		mark_ok
+		exit $? ;;
+	debian|0) sel=0 ;;
+	owrt|openwrt|1) sel=1 ;;
+	test|debian-test|2) sel=2 ;;	# Debian with the kernel in /boot/debian-test; falls back to debian
+	*) echo "usage: $0 [debian|owrt|test [now] | confirm-ssh [sec] | ok]" >&2; exit 1 ;;
+esac
+
+env_ok || exit 1
+fw_setenv bootsel "$sel" && fw_setenv boot_count 0 || exit 1
+log "next boot: bootsel=$sel"
+show
+[ "$2" = now ] && reboot
+exit 0
