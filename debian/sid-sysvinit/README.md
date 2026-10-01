@@ -16,14 +16,17 @@ The script does the following:
 ## Generic image
 
     WORK=/root/mbl-generic ./build-rootfs.sh     # no ssh key argument
-    WORK=/root/mbl-generic ./make-image.sh       # -> mbl-sid-sysvinit-<date>.tar.xz
+    WORK=/root/mbl-generic ./make-image.sh       # -> mbl-sid-sysvinit-<date>-gro-wd-p21.tar.xz
 
 `make-image.sh` adds the following to the plain rootfs:
-- kernel 4.19.325-cip136-mbl in `/boot` (uImage + apollo3g.dtb, from `kernel/precompiled`) and its modules;
+- kernel 4.19.325-cip136-st20-mbl-p21 in `/boot` (GRO + hang recovery + patches 0020/0021, uImage + apollo3g.dtb) and its matching modules;
+- `/etc/sysctl.d/90-mbl-hang-recovery.conf`: panic after a task is stuck for 180 seconds or a soft lockup, then reboot after 10 seconds;
 - `mbl-led`, `wsdd2`, `mbl-boot` and `fw_env.config`;
 - the Samba config from `samba/smb-sid.conf`.
 
-It removes all personal state: no ssh keys, no host keys (dropbear `-R` creates them on the first connection), an empty machine-id and empty logs.
+It removes all personal state: no ssh keys, no host keys (dropbear `-R` creates them on the first connection), an empty machine-id and empty logs. This is the kernel's hung-task/soft-lockup recovery, not a hardware watchdog.
+
+The additional archive `image/mbl-sid-sysvinit-20261001-gro-wd-p21.tar.xz` was made from the previous generic archive with the tested patch-21 uImage from the WSL build and matching modules from the NAS. Its kernel config is identical to the running NAS's GRO+WD config. The generic device tree was kept from the previous archive; no NAS host settings were imported. `image/*.sha256` contains checksums. The exact kernel package is in `kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p21.tgz`.
 
 | Setting | Value |
 |---|---|
@@ -33,18 +36,18 @@ It removes all personal state: no ssh keys, no host keys (dropbear `-R` creates 
 | fstab | root `/dev/sda4`, swap `/dev/sda3`, data `/dev/sda5` on `/DataVolume` (`nofail`), as in `uboot/boot_multi` |
 
 To use it:
-1. Unpack onto the root partition: `tar -xJpf mbl-sid-sysvinit-<date>.tar.xz -C /mnt/new`.
+1. Unpack onto the root partition: `tar -xJpf mbl-sid-sysvinit-<date>-gro-wd-p21.tar.xz -C /mnt/new`.
 2. Copy `boot/uImage_*` and `boot/apollo3g.dtb` to wherever u-boot loads them from (`/boot/debian/uImage` on sda1 with `boot_multi`).
-3. Run `mkswap` on the swap partition once: the page size is 16K.
+3. Run `mkswap` on the swap partition once: the page size is 16K. The boot script should pass `panic=10` (as `uboot/boot_multi` does), including during early boot before sysctl is applied.
 
 ## Install on the author's box
 
 Install from the OpenWrt rescue system:
 1. Format the root partition with `mkfs.ext4 -O ^orphan_file` (4.19 cannot mount orphan_file).
 2. Unpack the tarball onto it.
-3. Run `configure-mbl.sh`. It does the following:
+3. Optionally run `configure-mbl.sh` for this particular NAS, only after the generic archive is unpacked. It does the following:
    - writes fstab, the static network setup, `fw_env.config` and the `mbl-boot` rc.local hook;
-   - takes the root password and dropbear host keys from the previous system.
+   - takes the root password and dropbear host keys from the previous system. Do not repack or distribute that personalized rootfs.
 
 ## Notes for the 4.19 kernel
 

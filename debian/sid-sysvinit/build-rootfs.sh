@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a Debian sid (debian-ports, powerpc) root filesystem for the WD My Book Live
-# that boots with sysvinit instead of systemd, for use with the ewaldc 4.19.99 kernel
+# that boots with sysvinit instead of systemd, for use with the 4.19.325-cip136-mbl-p21 kernel
 # (systemd >= 258 requires kernel >= 5.4 and no longer supports cgroup v1).
 #
 # Run as root on a disposable x86 Debian/Ubuntu system (e.g. a spare WSL distro):
@@ -27,8 +27,7 @@ OUT=$WORK/rootfs-sid-sysv-$(date +%Y%m%d).tgz
 KEYRING=/usr/share/keyrings/debian-ports-archive-keyring.gpg
 
 # No udev: the 4.19 kernel has DEVTMPFS_MOUNT. No IPv6: disabled in the 4.19 config.
-# No openssh-server: OpenSSH >= 10 requires seccomp for its preauth sandbox and the 4.19 kernel
-# is built without CONFIG_SECCOMP, so every login fails; dropbear does not need it.
+# Dropbear keeps the image smaller than openssh-server and supports host-key generation on first boot.
 # opensysusers instead of systemd-standalone-sysusers: systemd >= 262 needs statx STATX_MNT_ID
 # (kernel 5.8, backported in 4.19.325-mbl), opensysusers works on any kernel.
 PACKAGES="sysvinit-core sysv-rc initscripts orphan-sysvinit-scripts \
@@ -50,7 +49,7 @@ apt-get update
 apt-get install -y debootstrap qemu-user-static binfmt-support wget
 apt-get install -y debian-ports-archive-keyring || true
 # Distribution keyrings lag behind the debian-ports signing key: take the newest one from Debian
-KEYRING_POOL=http://deb.debian.org/debian/pool/main/d/debian-ports-archive-keyring
+KEYRING_POOL=https://deb.debian.org/debian/pool/main/d/debian-ports-archive-keyring
 KEYRING_DEB=$(wget -qO- "$KEYRING_POOL/" |
 	grep -o 'debian-ports-archive-keyring_[0-9.]*_all\.deb' | sort -uV | tail -1) || true
 if [ -n "$KEYRING_DEB" ] && wget -qO "/tmp/$KEYRING_DEB" "$KEYRING_POOL/$KEYRING_DEB"; then
@@ -85,14 +84,9 @@ echo "==== debootstrap $SUITE (powerpc) into $TARGET"
 cleanup
 rm -rf "$TARGET"
 mkdir -p "$TARGET"
-if [ -r "$KEYRING" ]; then
-	GPG_OPT="--keyring=$KEYRING"
-else
-	echo "WARNING: debian-ports keyring not found on host, skipping signature check"
-	GPG_OPT="--no-check-gpg"
-fi
+[ -r "$KEYRING" ] || die "debian-ports keyring not found at $KEYRING"
 # minbase leaves out the 'init' package, so systemd-sysv never gets pulled in
-debootstrap --arch=powerpc --variant=minbase $GPG_OPT \
+debootstrap --arch=powerpc --variant=minbase --keyring="$KEYRING" \
 	--include=ca-certificates,debian-ports-archive-keyring \
 	"$SUITE" "$TARGET" "$MIRROR"
 
@@ -163,7 +157,7 @@ else
 	echo "ipv4only" >> "$TARGET/etc/dhcpcd.conf"
 fi
 
-# chrony's default seccomp filter (-F 1) is fatal on the 4.19 kernel without CONFIG_SECCOMP
+# Keep chrony compatible with 4.19; the kernel supports seccomp, but its filter is unnecessary here.
 sed -i 's/^DAEMON_OPTS="-F 1"/DAEMON_OPTS="-F 0"/' "$TARGET/etc/default/chrony"
 
 # No virtual consoles on the MBL: replace tty getty's with a serial one

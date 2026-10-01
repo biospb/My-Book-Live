@@ -1,17 +1,17 @@
 #!/bin/bash
 # Turn the rootfs from build-rootfs.sh into a generic, ready-to-boot My Book Live image:
-# kernel 4.19.325-cip136-mbl + modules, MBL tools (mbl-led, mbl-boot, wsdd2 init), Samba config,
-# DHCP, no personal keys. Run as root on the build host after build-rootfs.sh (without a key):
+# kernel 4.19.325-cip136-mbl-p21 (GRO + hang recovery) and modules, MBL tools,
+# Samba config, DHCP, no personal keys. Run as root after build-rootfs.sh (without a key):
 #
 #   sudo WORK=/root/mbl-generic ./build-rootfs.sh
 #   sudo WORK=/root/mbl-generic ./make-image.sh
 #
 # Optional environment:
-#   KERNEL_TGZ=../../kernel/precompiled/linux-4.19.325-cip136-st20-mbl.tgz
-#   HOSTNAME_MBL=mybooklive  ROOT_PASSWORD=debian
+#   KERNEL_TGZ=../../kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p21.tgz
+#   HOSTNAME_MBL=mybooklive  ROOT_PASSWORD=debian  OUT=/path/to/image.tar.xz
 #
-# Result: $WORK/mbl-sid-sysvinit-<date>.tar.xz, unpacked onto the root partition (sda4 in
-# uboot/boot_multi) with: tar -xJpf mbl-sid-sysvinit-<date>.tar.xz -C /mnt/new
+# Result: $WORK/mbl-sid-sysvinit-<date>-gro-wd-p21.tar.xz, unpack onto the root partition
+# (sda4 in uboot/boot_multi) with: tar -xJpf "$OUT" -C /mnt/new
 
 set -euo pipefail
 
@@ -20,10 +20,10 @@ REPO=$(cd "$HERE/../.." && pwd)
 WORK=${WORK:-/root/mbl-generic}
 SRC=$WORK/rootfs
 TARGET=$WORK/image
-KERNEL_TGZ=${KERNEL_TGZ:-$REPO/kernel/precompiled/linux-4.19.325-cip136-st20-mbl.tgz}
+KERNEL_TGZ=${KERNEL_TGZ:-$REPO/kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p21.tgz}
 HOSTNAME_MBL=${HOSTNAME_MBL:-mybooklive}
 ROOT_PASSWORD=${ROOT_PASSWORD:-debian}
-OUT=$WORK/mbl-sid-sysvinit-$(date +%Y%m%d).tar.xz
+OUT=${OUT:-$WORK/mbl-sid-sysvinit-$(date +%Y%m%d)-gro-wd-p21.tar.xz}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -81,6 +81,16 @@ cat > "$TARGET/etc/fw_env.config" <<-'EOF'
 	# MTD device	Offset		Env size	Sector size	Sectors
 	/dev/mtd0	0x1e000		0x1000		0x1000		1
 	/dev/mtd0	0x1f000		0x1000		0x1000		1
+EOF
+
+# This kernel panics on a hung task or soft lockup. The multiboot bootargs already
+# set panic=10; keep the reboot timeout here too for other boot scripts.
+mkdir -p "$TARGET/etc/sysctl.d"
+cat > "$TARGET/etc/sysctl.d/90-mbl-hang-recovery.conf" <<-'EOF'
+	kernel.hung_task_timeout_secs = 180
+	kernel.hung_task_panic = 1
+	kernel.softlockup_panic = 1
+	kernel.panic = 10
 EOF
 
 # Host keys are removed below; dropbear -R creates unique ones on the first connection
