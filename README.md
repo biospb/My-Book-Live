@@ -6,9 +6,10 @@ This fork of [ewaldc/My-Book-Live](https://github.com/ewaldc/My-Book-Live) provi
 
 Changes made in this fork (September–October 2026):
 
-- **CIP kernel and precompiled package:** rebased the MBL patch set onto **4.19.325-cip136 (CIP SLTS)**, with audited driver fixes, build configurations and matching modules. The current package is **4.19.325-cip136-st20-mbl-p21**.
+- **CIP kernel and precompiled package:** rebased the MBL patch set onto **4.19.325-cip136 (CIP SLTS)**, with audited driver fixes, build configurations and matching modules. The current package is **4.19.325-cip136-st20-mbl-p22-wd-perf**.
 - **Kernel fixes and compatibility:** fixed EMAC use-after-free, TSO and SATA error handling; added SECCOMP, socket diagnostics, GPIO LEDs, crypto4xx TRNG and the statx mount-id backport required by current sid tools.
 - **GRO and SATA DMA patches:** **0019** enables EMAC GRO; **0020** uses 8K DMA LLI blocks; **0021** terminates the SATA DMA channel on hard reset so a DMA timeout cannot wedge subsequent commands.
+- **Bounded pagecopy and Samba splice:** **0022** reuses the existing bounded PPC copy loop for suitable page-to-kernel copies. The tested splice v2 shim uses a 1 MiB pipe, preserves request framing on errors and is loaded through the smbd SysV start path. The new kernel retains perf and removes the temporary copy-alignment counters.
 - **Hang recovery:** hung-task and soft-lockup panic settings trigger a reboot and allow multiboot fallback to recover from a stuck boot.
 - **Debian sid with sysvinit:** added powerpc rootfs and generic image builders, `opensysusers`, wsdd2 and `C.UTF-8`. The current generic image includes the patch-21 CIP kernel, matching modules and MBL services, without personal host settings or SSH keys.
 - **Multiboot and rescue:** added `mbl-boot`, SSH boot confirmation, automatic fallback between Debian and OpenWrt rescue, a test-kernel slot and a Python boot-script image builder.
@@ -16,14 +17,15 @@ Changes made in this fork (September–October 2026):
 
 ## Latest validated kernel support
 
-**4.19.325-cip136-st20-mbl-p21**, based on the [CIP](https://wiki.linuxfoundation.org/civilinfrastructureplatform/start) SLTS kernel, is the current validated package for Debian sid in this fork.
+**4.19.325-cip136-st20-mbl-p22-wd-perf**, based on the [CIP](https://wiki.linuxfoundation.org/civilinfrastructureplatform/start) SLTS kernel, is the current tested package for Debian sid in this fork.
 
-- 16K pages, EMAC GRO and SATA DMA fixes through patch 0021.
+- 16K pages, EMAC GRO, SATA DMA fixes 0020/0021 and bounded pagecopy patch 0022.
 - Hung-task/soft-lockup recovery with panic and reboot settings.
+- PERF_EVENTS enabled; the temporary mbl_copy_diag code and proc counters are absent.
 - SECCOMP, sock_diag (`ss`), `/proc/config.gz`, GPIO LEDs, POSIX ACLs, crypto4xx TRNG and statx mount-id support.
 - Tested with SMB transfers and local copy/hash checks on the single-disk MBL.
 
-Package: [`linux-4.19.325-cip136-st20-mbl-p21.tgz`](kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p21.tgz), containing the uImage, device tree, kernel config and matching modules. See the [CIP patch series, build and validation notes](kernel/patches/4.19.325-cip136/README.md) and [patch audit](kernel/patches/4.19/audit).
+Package: [`linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz`](kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz), containing the exact tested uImage, board device tree, config, System.map and matching modules. [Checksums](kernel/precompiled/SHA256SUMS-p22-perf) and a [separate matching debug vmlinux](kernel/precompiled/vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz) are provided for perf. The [Samba shim](debian/samba-splice/README.md) is installed separately; the kernel archive does not enable it by itself. See the [CIP patch series](kernel/patches/4.19.325-cip136/README.md) and [patch audit](kernel/patches/4.19/audit).
 
 NCQ is disabled with `libata.force=noncq`; the SATA driver uses queue depth 1. Hang recovery uses kernel panic and reboot settings, not a hardware watchdog.
 
@@ -49,18 +51,23 @@ Custom firmware replaces the original WD software and web interface. Recovery fr
 
 The sid setup uses [samba/smb-sid.conf](samba/smb-sid.conf). The fork also provides a [32-bit Samba 4.25 smbstatus fix](debian/samba-fix/install-smbstatus-fix.sh).
 
-Recorded CIP tests with **GRO and MAL interrupt coalescing reached 69 MB/s SMB write and 106 MB/s read** on 1 GbE with a Windows client and a 2 GiB test file. Write speed was 68.8 MB/s with `rx-frames 64` (the configured setting) and 69.0 MB/s with `rx-frames 256`, both at `rx-usecs 500`. The patch-21 package separately recorded 66.9–67.3 MB/s write and 102.8–106.3 MB/s read, with local copy/hash checks. See the [kernel benchmark and validation notes](kernel/patches/4.19.325-cip136/README.md) for exact configurations and [bench](bench) for scripts and raw results.
+The current NAS additionally loads [samba-splice v2](debian/samba-splice/README.md) only through the smbd service, with a versioned precompiled library and a checked rollback. The shim bypasses the userspace payload buffer; pipe-to-ext4 page-cache copying remains and is accelerated by patch 0022. [Extended validation](bench/README.md#splice-resource-and-error-validation) covered 1454 file round trips, independent parallel sessions, 60 reconnects, 12 forced disconnects and 1800 in-process error/reuse cases. No accumulating resource use was observed in the bounded test; this is not a 96-hour or long-term stability certification.
+
+Recorded CIP tests with **GRO and MAL interrupt coalescing reached 69 MiB/s SMB write and 106 MiB/s read** on 1 GbE with a Windows client and a 2 GiB test file. Write speed was 68.8 MiB/s with `rx-frames 64` (the configured setting) and 69.0 MiB/s with `rx-frames 256`, both at `rx-usecs 500`. The patch-21 package separately recorded 66.9–67.3 MiB/s write and 102.8–106.3 MiB/s read, with local copy/hash checks. The old script printed MB/s but actually divided by 1024². See the [kernel notes](kernel/patches/4.19.325-cip136/README.md) and [benchmark summaries](bench/README.md); generated raw captures stay local and are excluded from Git.
 
 
-### Recorded comparison (September 2026)
+### Recorded comparison (September–October 2026)
 
-Historical measurements on the same single-disk MBL, with 1 GbE, a Windows client and a 2 GiB SMB test file. The baseline CIP row predates GRO and patch 21; the tuned row shows the GRO and MAL coalescing tests. Disk and TCP figures were not measured for that exact tuned configuration.
+Measurements on the same single-disk MBL with 1 GbE and a Windows client. The first three rows are historical 2 GiB tests; the fourth row uses three 1 GiB writes and cold NAS readbacks with SHA256, no perf recording. All SMB figures below are MiB/s; disk dd figures are decimal MB/s. Disk and TCP figures were not repeated for the fourth configuration.
 
-| Configuration | SMB write / read | disk dd write / read | TCP rx / tx |
+| Configuration | SMB write / read (MiB/s) | disk dd write / read (MB/s) | TCP rx / tx |
 |---|---|---|---|
-| Jessie + 4.19.99 + Samba 4.2 | 58 / 100 MB/s | 115 / 121 MB/s | 853 / 903 Mbit/s |
-| OpenWrt 25.12 (6.12, stock drivers) | 34 / 35 MB/s | 68 / 77 MB/s | 615 / 527 Mbit/s |
-| sid + 4.19.325-cip136-mbl + Samba 4.25 | 69 / 106 MB/s | 115 / 123 MB/s | 930 / 985 Mbit/s |
+| Jessie + 4.19.99 + Samba 4.2 | 58 / 100 | 115 / 121 | 853 / 903 Mbit/s |
+| OpenWrt 25.12 (6.12, stock drivers) | 34 / 35 | 68 / 77 | 615 / 527 Mbit/s |
+| sid + 4.19.325-cip136-mbl + Samba 4.25 | 69 / 106 | 115 / 123 | 930 / 985 Mbit/s |
+| sid + 4.19.325-cip136-p22 + Samba 4.25, pagecopy + splice | **76.3 / 106.3** | not repeated | not repeated |
+
+The fourth row is the median of three transfers on the published `4.19.325-cip136-st20-mbl-p22-wd-perf` binary: **76.34 / 106.32 MiB/s**, with write range 73.99–76.89 MiB/s and all readback hashes matching. See [p22 results](bench/README.md#p22-kernel-with-persistent-splice). Earlier pagecopy builds and the [no-perf A/B/A](bench/README.md#pagecopy-and-perf-comparison) used a different source base and are retained as historical comparisons, not relabelled as p22 measurements. The generic Debian image still contains p21 and does not include the new splice service wrapper.
 
 ## Repository layout
 

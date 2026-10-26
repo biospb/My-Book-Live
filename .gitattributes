@@ -1,0 +1,4 @@
+# Preserve measured artifacts byte-for-byte so SHA256SUMS survive every checkout.
+kernel/diagnostics/** -text -whitespace
+# Unified diff context and captured output are not source whitespace errors.
+*.patch -whitespace

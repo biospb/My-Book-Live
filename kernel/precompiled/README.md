@@ -5,7 +5,7 @@ First, read up on how to enable a recovery kernel __[here](https://github.com/ew
 
 ## Which kernel to take ? ##
 
-All kernels listed below here have survived a 96-hours torture test.  Other kernels posted versions are not fully validated (yet).  Anyhow, none of them are officially supported, so this is __always at your own risk__.
+The historical OEM/Jessie kernels below were reported by upstream as surviving a 96-hour torture test. The newer Debian sid kernels have the bounded validation described in their notes; they have not passed that historical test. None of these kernels is officially supported.
 The only kernel that can be used with original WD software is 2.6.32.70.
 
 ## Validated kernels for use with OEM/original firmware ##
@@ -33,13 +33,14 @@ You will need to update `/etc/network/if-up.d/tuneperf` to use Jumbo packets or 
 
 ## Kernels for Debian sid (2026) ##
 Built with gcc 12 from the series in [../patches/4.19.325-cip136](../patches/4.19.325-cip136/README.md) and [../patches/4.19.325](../patches/4.19.325/README.md) (16K pages, like 4.19.99). Validated on a single-disk MBL with Debian sid + sysvinit, booted with `libata.force=noncq rng_core.default_quality=700`.
-* __linux-4.19.325-cip136-st20-mbl-p21.tgz__ (latest): GRO and the `-wd` hang/soft-lockup protection below, plus SATA DMA fixes 0020/0021. The 16K-page patch-21 kernel was tested with SMB and local copy/hash checks. This package uses the matching NAS modules and the generic apollo3g device tree.
+* __[linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz)__ (latest): complete patches 0001–0022, including SATA 0020/0021 and bounded `memcpy_from_page` optimization. 16K pages, hang recovery and PERF_EVENTS are retained; copy-alignment counters are completely absent. Includes the exact tested board DTB (DMA-engine bindings, zero MAC address), config, System.map and two matching modules. This DTB differs from the older generic file. [Checksums](SHA256SUMS-p22-perf), [matching debug vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz), [build checks](../diagnostics/p22-perf/build-validation.json) and [runtime/SMB results](../../bench/README.md#p22-kernel-with-persistent-splice). Samba splice is a separate [userspace installation](../../debian/samba-splice/README.md).
+* __linux-4.19.325-cip136-st20-mbl-p21.tgz__: GRO and the `-wd` hang/soft-lockup protection below, plus SATA DMA fixes 0020/0021. The 16K-page patch-21 kernel was tested with SMB and local copy/hash checks. This package uses the matching NAS modules and the generic apollo3g device tree.
 * __linux-4.19.325-cip136-st20-mbl-wd.tgz__: the -gro kernel below with hang protection: a task blocked in D state for 180 s (`hung_task_panic`) or a soft lockup panics, and `panic=10` reboots, so the multiboot fallback also covers a boot that hangs before SSH.
-* __linux-4.19.325-cip136-st20-mbl-gro.tgz__: the cip136 kernel below plus patch 0019 (emac GRO), SMB write 61 -> 67 MB/s.
+* __linux-4.19.325-cip136-st20-mbl-gro.tgz__: the cip136 kernel below plus patch 0019 (emac GRO), SMB write 61 -> 67 MiB/s.
 * __linux-4.19.325-cip136-st20-mbl.tgz__: CIP SLTS base with the audit fixes, SECCOMP, sock_diag, `/proc/config.gz`, gpio LEDs, POSIX ACLs, crypto4xx TRNG, statx mount-id backport.
 * __linux-4.19.325-mbl.tgz__: the same on the last kernel.org 4.19 release, without the CIP fixes and without patches 0017/0018 of the CIP series.
 
-Each archive contains `boot/uImage_<release>`, `boot/apollo3g.dtb` (= `../dts/apollo3g.dtb`), `boot/config-<release>` and `lib/modules/<release>`. Use `tar -xzf` from `/` and point u-boot at the uImage (see [../../uboot/boot_multi](../../uboot/boot_multi/README.md)).
+Each archive contains `boot/uImage_<release>`, `boot/apollo3g.dtb`, `boot/config-<release>` and `lib/modules/<release>`. Older archives use the generic `../dts/apollo3g.dtb`; p22 carries the tested DMA-engine board DTB described above. Use `tar -xzf` from `/` and point u-boot at the uImage (see [../../uboot/boot_multi](../../uboot/boot_multi/README.md)). Keep the matching modules with the selected kernel. The separately compressed p22 vmlinux is for symbolization and is not required for boot.
 
 ## Installing pre-build kernels on Debian Jessie ##
 All posted kernels are compressed tar archives with [7zip](https://www.7-zip.org/) and contain:

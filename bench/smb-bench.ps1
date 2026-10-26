@@ -5,6 +5,7 @@
 #   .\smb-bench.ps1 -Label "owrt25-ksmbd" -Share \\192.168.7.4\public -SizeGB 2 -Runs 3
 #
 # Results are appended to smb-bench.csv next to this script.
+# Legacy CSV columns WriteMBs/ReadMBs contain MiB/s (PowerShell 1MB = 1024^2).
 
 param(
 	[Parameter(Mandatory)] [string] $Label,
@@ -53,7 +54,7 @@ for ($run = 1; $run -le $Runs; $run++) {
 	Remove-Item (Join-Path $dst $file) -ErrorAction SilentlyContinue
 	$read = Copy-Timed $remote $dst
 
-	Write-Host ("run {0}: write {1} MB/s, read {2} MB/s" -f $run, $write, $read)
+	Write-Host ("run {0}: write {1} MiB/s, read {2} MiB/s" -f $run, $write, $read)
 	$results += [pscustomobject]@{
 		Date = (Get-Date -Format 's'); Label = $Label; Share = $Share; SizeGB = $SizeGB
 		Run = $run; WriteMBs = $write; ReadMBs = $read
@@ -66,5 +67,5 @@ Remove-Item (Join-Path $dst $file) -ErrorAction SilentlyContinue
 
 $w = ($results.WriteMBs | Measure-Object -Average -Maximum)
 $r = ($results.ReadMBs | Measure-Object -Average -Maximum)
-Write-Host ("{0}: write avg {1:N1} / max {2:N1} MB/s, read avg {3:N1} / max {4:N1} MB/s" -f $Label, $w.Average, $w.Maximum, $r.Average, $r.Maximum)
+Write-Host ("{0}: write avg {1:N1} / max {2:N1} MiB/s, read avg {3:N1} / max {4:N1} MiB/s" -f $Label, $w.Average, $w.Maximum, $r.Average, $r.Maximum)
 exit 0  # robocopy leaves $LASTEXITCODE = 1 ("files copied") behind

@@ -1,1 +1,4 @@
 __pycache__/
+/bench/results/
+/diagnostics/
+*.img.gz

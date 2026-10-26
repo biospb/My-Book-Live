@@ -42,6 +42,6 @@ gcc 12 (`gcc-12-powerpc-linux-gnu`), see `build.sh`:
 
 | | 4.19.99 ewaldc | 4.19.325-mbl |
 |---|---|---|
-| SMB write / read, MB/s | 62.2 / 105.9 | 61.2 / 106.0 |
+| SMB write / read, MiB/s | 62.2 / 105.9 | 61.2 / 106.0 |
 | dd write / read, MB/s | 117-118 / 117-122 | 95-115 / 118-120 |
 | iperf3 rx / tx, Mbit/s | 853 / 903 | 919 / 983 |

@@ -8,10 +8,10 @@
  * cache). With splice the socket -> pipe step moves skb pages, only the
  * pipe -> page cache copy remains.
  *
- * Semantics as in Samba: returns -1 only if the socket read failed before
- * anything was written (errno set, EAGAIN for a non-blocking socket), else
- * the number of bytes written to tofd; when that is short of count, the rest
- * of the data is still read from the socket and dropped, and errno is set.
+ * A non-blocking EAGAIN returns any progress; other input failures return -1.
+ * On output failure, return progress or -1 if none, with errno set; consume
+ * the remaining request payload so the next SMB header stays framed.
+ * Append/drain-only requests use Samba's original implementation.
  *
  * Build: see Makefile. Use: LD_PRELOAD=/usr/local/lib/samba-splice.so smbd
  */
@@ -25,7 +25,7 @@
 #include <unistd.h>
 
 #define VFS_PWRITE_APPEND_OFFSET ((off_t)-1)
-#define PIPE_SIZE (256 * 1024)
+#define PIPE_SIZE (1024 * 1024)
 
 typedef ssize_t (*recvfile_fn)(int, int, off_t, size_t);
 
@@ -74,7 +74,12 @@ static bool drain(int fd, size_t len)
 		if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			struct pollfd p = { .fd = fd, .events = POLLIN };
 
-			if (poll(&p, 1, 60000) <= 0)
+			int ret;
+
+			do {
+				ret = poll(&p, 1, 60000);
+			} while (ret == -1 && errno == EINTR);
+			if (ret <= 0)
 				return false;
 			continue;
 		}
@@ -89,16 +94,21 @@ ssize_t sys_recvfile(int fromfd, int tofd, off_t offset, size_t count)
 {
 	loff_t off = offset;
 	loff_t *offp = offset == VFS_PWRITE_APPEND_OFFSET ? NULL : &off;
-	size_t written = 0;
-	int saved_errno = 0;
+	size_t written = 0, consumed = 0;
+	int saved_errno = 0, file_flags;
 
 	if (count == 0)
 		return 0;
-	if (!splice_ok || tofd == -1 || !pipe_setup())
+	if (!splice_ok || tofd == -1 ||
+	    offset == VFS_PWRITE_APPEND_OFFSET)
+		return orig_recvfile(fromfd, tofd, offset, count);
+	/* splice rejects O_APPEND even when an explicit offset is supplied. */
+	file_flags = fcntl(tofd, F_GETFL);
+	if (file_flags == -1 || (file_flags & O_APPEND) || !pipe_setup())
 		return orig_recvfile(fromfd, tofd, offset, count);
 
-	while (written < count) {
-		size_t want = count - written;
+	while (consumed < count) {
+		size_t want = count - consumed;
 		ssize_t in, left;
 
 		if (want > pipe_size)
@@ -107,23 +117,21 @@ ssize_t sys_recvfile(int fromfd, int tofd, off_t offset, size_t count)
 		if (in == -1) {
 			if (errno == EINTR)
 				continue;
-			if (written == 0 && (errno == EINVAL || errno == ENOSYS)) {
+			if (consumed == 0 && (errno == EINVAL || errno == ENOSYS || errno == EBADF)) {
 				/* no socket -> pipe splice here: never try again */
 				splice_ok = false;
 				return orig_recvfile(fromfd, tofd, offset, count);
 			}
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				return written ? (ssize_t)written : -1;
-			return written ? (ssize_t)written : -1;
+			return -1;
 		}
 		if (in == 0) {
 			/* peer closed */
-			if (written)
-				return (ssize_t)written;
 			errno = ECONNRESET;
 			return -1;
 		}
-
+		consumed += (size_t)in;
 		for (left = in; left > 0;) {
 			ssize_t out = splice(pipefd[0], NULL, tofd, offp, (size_t)left, SPLICE_F_MOVE);
 
@@ -133,14 +141,14 @@ ssize_t sys_recvfile(int fromfd, int tofd, off_t offset, size_t count)
 				/* write error: empty the pipe, drop the rest of the data */
 				saved_errno = out == 0 ? EIO : errno;
 				if (!drain(pipefd[0], (size_t)left) ||
-				    !drain(fromfd, count - written - (size_t)in)) {
+				    !drain(fromfd, count - consumed)) {
 					close(pipefd[0]);
 					close(pipefd[1]);
 					pipefd[0] = pipefd[1] = -1;
 					return -1;
 				}
 				errno = saved_errno;
-				return (ssize_t)written;
+				return written ? (ssize_t)written : -1;
 			}
 			left -= out;
 			written += (size_t)out;

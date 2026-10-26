@@ -1,0 +1,46 @@
+Subject: [PATCH 22/22] lib/iov_iter: use bounded PPC copy for aligned APM821xx page copies
+
+Reuse the existing __copy_tofrom_user bounded-prefetch loop on valid mapped
+kernel RAM in memcpy_from_page. Keep memcpy for short, unaligned or
+overlapping ranges, and retry a reported incomplete copy with memcpy.
+No global memcpy or assembler changes; no copy-alignment counters.
+
+The incremental optimization was validated on the MBL pagecopy kernel;
+this patch applies after the full CIP series through SATA fixes 0020/0021.
+
+diff --git a/lib/iov_iter.c b/lib/iov_iter.c
+index 439196223031..78c43da37f34 100644
+--- a/lib/iov_iter.c
++++ b/lib/iov_iter.c
+@@ -451,7 +451,30 @@ EXPORT_SYMBOL(iov_iter_init);
+ static void memcpy_from_page(char *to, struct page *page, size_t offset, size_t len)
+ {
+ 	char *from = kmap_atomic(page);
+-	memcpy(to, from + offset, len);
++#ifdef CONFIG_APM821xx
++	unsigned long dst = (unsigned long)to;
++	unsigned long src = (unsigned long)(from + offset);
++
++	/* The 44x memcpy loop has no source prefetch. Reuse the bounded
++	 * prefetch loop already used by uaccess, on mapped cacheable RAM.
++	 * Keep ordinary memcpy for small, unaligned or overlapping ranges:
++	 * the prefetched loop uses dcbz and must not overlap its source.
++	 */
++	if (len >= 256 && !((src | dst) & 3) &&
++	    (dst < src ? src - dst >= len : dst - src >= len)) {
++		unsigned long left = __copy_tofrom_user(
++			(void __force __user *)to,
++			(const void __force __user *)(from + offset), len);
++
++		/* Mapped kernel RAM should not fault. If it does, retry the
++		 * remainder with the original primitive instead of silently
++		 * treating an incomplete copy as successful.
++		 */
++		if (unlikely(left))
++			memcpy(to + len - left, from + offset + len - left, left);
++	} else
++#endif
++		memcpy(to, from + offset, len);
+ 	kunmap_atomic(from);
+ }
+ 
