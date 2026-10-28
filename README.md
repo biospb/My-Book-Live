@@ -66,9 +66,22 @@ Measurements on the same single-disk MBL with 1 GbE and a Windows client. The fi
 | OpenWrt 25.12 (6.12, stock drivers) | 34 / 35 | 68 / 77 | 615 / 527 Mbit/s |
 | sid + 4.19.325-cip136-mbl + Samba 4.25 | 69 / 106 | 115 / 123 | 930 / 985 Mbit/s |
 | sid + 4.19.325-cip136-p22 + Samba 4.25, pagecopy + splice | **76.3 / 106.3** | 117 / 123 | 938 / 958 Mbit/s |
-| sid + 6.18.58-mbl-p40 + Samba 4.25, pagecopy + splice | **72.6 / 100.1** | 116 / 122 | 935 / 956 Mbit/s |
+| sid + 6.18.58-mbl-p40 + Samba 4.25, pagecopy + splice | **72.6 / 100.1** | 116 / 122 | 860 / 956 Mbit/s |
+| sid + 7.3.0-mbl-73r1-slim + Samba 4.25, pagecopy + splice | **69.2 / 102.1** | 107–109 / 113–119 | 859 / 940 Mbit/s |
 
 The fourth row is the median of three transfers on the published `4.19.325-cip136-st20-mbl-p22-wd-perf` binary: **76.34 / 106.32 MiB/s**, with write range 73.99–76.89 MiB/s and all readback hashes matching. See [p22 results](bench/README.md#p22-kernel-with-persistent-splice). Earlier pagecopy builds and the [no-perf A/B/A](bench/README.md#pagecopy-and-perf-comparison) used a different source base and are retained as historical comparisons, not relabelled as p22 measurements. The generic Debian image still contains p21 and does not include the new splice service wrapper. The fifth row is the 6.18.58 p40 build — see [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md).
+
+The sixth row is the mainline **Linux 7.3** port (73r1-slim), measured on
+28 October 2026 with the same splice shim, RA128 and the same Windows
+client. SMB figures are `xcopy /J` (pipelined, Explorer-like) transfers
+of a contiguous 1 GiB file; sequential-client tools (Copy-Item,
+robocopy) reach about 70 MiB/s read on any kernel because the client
+itself sends one request at a time. Kernel-side profiling shows the
+same 1 MiB `sendfile64` path on all kernels; the disk-level dd and
+iperf3 numbers match p40 within noise. The 7.3 port carries the same
+0001–0016 series plus a read-ahead cap and a slim config (3.74 MiB
+uImage vs 4.7 MiB for p40) — see
+[kernel/patches/7.3](kernel/patches/7.3/README.md).
 
 ### Linux 6.18.58 experiments (October 2026)
 
@@ -94,6 +107,7 @@ full per-variant measurement reports, and a precompiled p40 package
 | [debian/sid-sysvinit](debian/sid-sysvinit/README.md) | Debian sid rootfs/image builders, installation notes and MBL services |
 | [kernel/patches/4.19.325-cip136](kernel/patches/4.19.325-cip136/README.md) | CIP patch series, configurations, build script and validation notes |
 | [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md) | Linux 6.18.58 port: numbered patch series, config, audit reports and trial tooling |
+| [kernel/patches/7.3](kernel/patches/7.3/README.md) | Linux 7.3 port (73r1-slim): series rebased on mainline v7.3, slim config, build script |
 | [kernel/precompiled](kernel/precompiled) | Precompiled kernel packages and matching modules (p22 and 6.18.58 p40) |
 | [samba](samba) | Samba configuration for sid |
 | [uboot/boot_multi](uboot/boot_multi/README.md) | Multiboot, rescue fallback and boot confirmation |

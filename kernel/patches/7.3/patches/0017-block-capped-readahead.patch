@@ -1,0 +1,18 @@
+--- a/block/blk-settings.c
++++ b/block/blk-settings.c
+@@ -70,13 +70,6 @@ void blk_apply_bdi_limits(struct backing_de
+ 	 * at least twice the optimal I/O size. For rotational devices that do
+ 	 * not report an optimal I/O size (e.g. ATA HDDs), use the maximum I/O
+ 	 * size to avoid falling back to the (rather inefficient) small default
+ 	 * read-ahead size.
+-	 *
+-	 * There is no hardware limitation for the read-ahead size and the user
+-	 * might have increased the read-ahead size through sysfs, so don't ever
+-	 * decrease it.
+ 	 */
+-	if (!io_opt && (lim->features & BLK_FEAT_ROTATIONAL))
+-		io_opt = (u64)lim->max_sectors << SECTOR_SHIFT;
+-
+ 	bdi->ra_pages = max3(bdi->ra_pages,
+ 				io_opt * 2 >> PAGE_SHIFT,
+ 				VM_READAHEAD_PAGES);

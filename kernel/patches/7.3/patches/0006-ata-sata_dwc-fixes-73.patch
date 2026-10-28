@@ -1,0 +1,70 @@
+diff --git a/drivers/ata/sata_dwc_460ex.c b/drivers/ata/sata_dwc_460ex.c
+index 8e3fc713891a..41c101968030 100644
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -541,6 +541,8 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "interrupt ATA_ERR (0x%x)\n", status);
++			/* report the device error: without it the command completes as good */
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(ap, qc);
+ 			handled = 1;
+ 			goto DONE;
+@@ -625,6 +627,8 @@ static irqreturn_t sata_dwc_isr(int irq, void *dev_instance)
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "%s ATA_ERR (0x%x)\n", __func__,
+ 				status);
++			/* report the device error: without it the command completes as good */
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(ap, qc);
+ 			handled = 1;
+ 			goto DONE;
+@@ -1040,10 +1044,31 @@ static int sata_dwc_hardreset(struct ata_link *link, unsigned int *class,
+ 			      unsigned long deadline)
+ {
+ 	struct sata_dwc_device *hsdev = HSDEV_FROM_AP(link->ap);
+-	int ret;
++	struct sata_dwc_device_port *hsdevp = HSDEVP_FROM_AP(link->ap);
++	int ret, i;
++
++	/*
++	 * EH has failed all commands, but a DMA descriptor of a timed out command
++	 * may still be active on the dw channel; the channel starts new
++	 * descriptors only when its active list is empty, so it would block every
++	 * later command. Drop it (no callbacks are run).
++	 */
++	if (hsdevp && !IS_ERR_OR_NULL(hsdevp->chan))
++		dmaengine_terminate_sync(hsdevp->chan);
+ 
+ 	ret = sata_sff_hardreset(link, class, deadline);
+ 
++	/* EH has failed all commands: forget per-tag state left behind */
++	hsdev->sactive_issued = 0;
++	hsdev->sactive_queued = 0;
++	if (hsdevp) {
++		for (i = 0; i < SATA_DWC_QCMD_MAX; i++) {
++			hsdevp->cmd_issued[i] = SATA_DWC_CMD_ISSUED_NOT;
++			hsdevp->dma_pending[i] = SATA_DWC_DMA_PENDING_NONE;
++			hsdevp->desc[i] = NULL;
++		}
++	}
++
+ 	sata_dwc_enable_interrupts(hsdev);
+ 
+ 	/* Reconfigure the DMA control register */
+@@ -1185,10 +1210,12 @@ static int sata_dwc_probe(struct platform_device *ofdev)
+ 	 * error_handler() to execute a dummy Softreset EH session
+ 	 */
+ 	err = ata_host_activate(host, irq, sata_dwc_isr, 0, &sata_dwc_sht);
+-	if (err)
++	if (err) {
+ 		dev_err(dev, "failed to activate host");
++		goto error_out;
++	}
+ 
+-	/* Enable SATA Interrupts */
++	/* Enable SATA Interrupts only once the handler is registered */
+ 	sata_dwc_enable_interrupts(hsdev);
+ 	return 0;
+ 

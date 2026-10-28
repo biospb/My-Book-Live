@@ -87,3 +87,33 @@ and the guarded trial tooling are documented in
 [../kernel/patches/6.18.58/README.md](../kernel/patches/6.18.58/README.md).
 The production NAS remains on p22.
 
+## Linux 7.3 comparison (73r1-slim, October 2026)
+
+The 7.3 port ([kernel/patches/7.3](../kernel/patches/7.3/README.md)) was
+measured on 28 October 2026 on the same NAS, same splice shim, same
+Windows client, same methods. Sequential-client tools (Copy-Item,
+robocopy `/J`) issue one SMB2 READ at a time and top out at ~70 MiB/s on
+every kernel; pipelined tools (`xcopy /J`, Explorer) reach higher
+figures. strace on smbd confirms the identical kernel path in both
+cases: 1 MiB `sendfile64` calls, so the difference is client-side
+pipeline depth, not the kernel.
+
+| Kernel (same-day measurements) | SMB write (xcopy) | SMB read (xcopy, contiguous file) | SMB read (Copy-Item) | dd write / read (MB/s) | iperf3 rx / tx |
+|---|---:|---:|---:|---|---|
+| 6.18.58-mbl-p40 (control re-run) | 68.9–70.2 | 101.7 | 69.6–71.6 | 91–108 / 108–120 | 859 / 940 Mbit/s |
+| 7.3.0-mbl-73r1-slim | 66.7–69.2 | 102.1 | 70.5–72.3 | 107–109 / 113–119 | 859 / 940 Mbit/s |
+
+Notes from the same-day diagnostics:
+
+* The reference-file placement matters: a file written with
+  `posix_fallocate` (32 extents with gaps up to 442 MB) reads at
+  ~71 MiB/s while a contiguously written file reads at ~101 MiB/s.
+  Both figures are seek-bound client physics, not kernel differences.
+* The 7.3 block layer inflates `read_ahead_kb` to 8192 for rotational
+  disks without `io_opt` (2 × `max_sectors`); the series caps it back to
+  the 128 KiB default (patch 0017) and rc.local sets it explicitly.
+* No hardware PMU exists for 44x in upstream; profiling used
+  `cpu-clock` sampling. Per-kernel `__copy_tofrom_user` cost during
+  buffered dd read is ~54% of CPU samples but the wall time is disk-bound
+  (direct I/O 118 MB/s on both kernels).
+

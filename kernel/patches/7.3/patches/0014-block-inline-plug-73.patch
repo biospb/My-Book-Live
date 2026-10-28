@@ -1,0 +1,76 @@
+diff --git a/block/blk-core.c b/block/blk-core.c
+index 196bccf27f58..37899505485c 100644
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -1166,6 +1166,19 @@ int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
+ }
+ EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
+ 
++void __blk_plug_init(struct blk_plug *plug, unsigned short nr_ios)
++{
++	plug->cur_ktime = 0;
++	rq_list_init(&plug->mq_list);
++	rq_list_init(&plug->cached_rqs);
++	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
++	plug->rq_count = 0;
++	plug->multiple_queues = false;
++	plug->has_elevator = false;
++	INIT_LIST_HEAD(&plug->cb_list);
++}
++EXPORT_SYMBOL_GPL(__blk_plug_init);
++
+ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
+ {
+ 	struct task_struct *tsk = current;
+@@ -1176,14 +1189,7 @@ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
+ 	if (tsk->plug)
+ 		return;
+ 
+-	plug->cur_ktime = 0;
+-	rq_list_init(&plug->mq_list);
+-	rq_list_init(&plug->cached_rqs);
+-	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
+-	plug->rq_count = 0;
+-	plug->multiple_queues = false;
+-	plug->has_elevator = false;
+-	INIT_LIST_HEAD(&plug->cb_list);
++	__blk_plug_init(plug, nr_ios);
+ 
+ 	/*
+ 	 * Store ordering should not be needed here, since a potential
+@@ -1215,12 +1221,6 @@ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
+  *   plug. By flushing the pending I/O when the process goes to sleep, we avoid
+  *   this kind of deadlock.
+  */
+-void blk_start_plug(struct blk_plug *plug)
+-{
+-	blk_start_plug_nr_ios(plug, 1);
+-}
+-EXPORT_SYMBOL(blk_start_plug);
+-
+ static void flush_plug_callbacks(struct blk_plug *plug, bool from_schedule)
+ {
+ 	LIST_HEAD(callbacks);
+diff --git a/include/linux/blk_plug.h b/include/linux/blk_plug.h
+index 2ac1265662ad..0203a5567b6e 100644
+--- a/include/linux/blk_plug.h
++++ b/include/linux/blk_plug.h
+@@ -40,7 +40,17 @@ struct blk_plug {
+ 	struct list_head cb_list; /* md requires an unplug callback */
+ };
+ 
+-void blk_start_plug(struct blk_plug *);
++void __blk_plug_init(struct blk_plug *plug, unsigned short nr_ios);
++static inline void blk_start_plug(struct blk_plug *plug)
++{
++	struct task_struct *tsk = current;
++
++	if (unlikely(tsk->plug))
++		return;
++	__blk_plug_init(plug, 1);
++	tsk->plug = plug;
++}
++
+ void blk_start_plug_nr_ios(struct blk_plug *, unsigned short);
+ void blk_finish_plug(struct blk_plug *);
+ 

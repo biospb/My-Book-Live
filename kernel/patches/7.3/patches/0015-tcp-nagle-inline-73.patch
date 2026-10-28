@@ -1,0 +1,22 @@
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+index e0c392e29de5..adf3cd2eb3c5 100644
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -2203,7 +2203,7 @@ static void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
+ }
+ 
+ /* Minshall's variant of the Nagle send check. */
+-static bool tcp_minshall_check(const struct tcp_sock *tp)
++static inline bool tcp_minshall_check(const struct tcp_sock *tp)
+ {
+ 	return after(tp->snd_sml, tp->snd_una) &&
+ 		!after(tp->snd_sml, tp->snd_nxt);
+@@ -2231,7 +2231,7 @@ static void tcp_minshall_update(struct tcp_sock *tp, unsigned int mss_now,
+  * 4. Or TCP_CORK is not set, and all sent packets are ACKed.
+  *    With Minshall's modification: all sent small packets are ACKed.
+  */
+-static bool tcp_nagle_check(bool partial, const struct tcp_sock *tp,
++static inline bool tcp_nagle_check(bool partial, const struct tcp_sock *tp,
+ 			    int nonagle)
+ {
+ 	return partial &&

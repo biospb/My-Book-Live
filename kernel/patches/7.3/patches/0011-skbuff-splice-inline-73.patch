@@ -1,0 +1,22 @@
+diff --git a/net/core/skbuff.c b/net/core/skbuff.c
+index 41beaf625421..d4416c96124c 100644
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -3141,7 +3141,7 @@ static bool spd_can_coalesce(const struct splice_pipe_desc *spd,
+ /*
+  * Fill page/offset/length into spd, if it can hold more pages.
+  */
+-static bool spd_fill_page(struct splice_pipe_desc *spd, struct page *page,
++static __always_inline bool spd_fill_page(struct splice_pipe_desc *spd, struct page *page,
+ 			  unsigned int *len, unsigned int offset, bool linear,
+ 			  struct sock *sk)
+ {
+@@ -3166,7 +3166,7 @@ static bool spd_fill_page(struct splice_pipe_desc *spd, struct page *page,
+ 	return false;
+ }
+ 
+-static bool __splice_segment(struct page *page, unsigned int poff,
++static __always_inline bool __splice_segment(struct page *page, unsigned int poff,
+ 			     unsigned int plen, unsigned int *off,
+ 			     unsigned int *len,
+ 			     struct splice_pipe_desc *spd, bool linear,

@@ -44,6 +44,21 @@ as the p22 binary. See [../patches/6.18.58/README.md](../patches/6.18.58/README.
   versus p22 76.4 / 106.7 (no-perf medians, three 1 GiB robocopy transfers
   with SHA256 readbacks). The production NAS remains on p22.
 
+## Kernel 7.3 (October 2026, experimental) ##
+Mainline Linux 7.3 port (73r1-slim). Same series 0001-0016 rebased on v7.3
+plus a read-ahead cap (0017) and a slim configuration: 3.74 MiB uImage
+(vs 4.7 MiB p40), unused subsystems (NFSD, F2FS, overlay, MD/DM, VLAN)
+built as modules, DEBUG_FS off, PREEMPT_LAZY with TINY_RCU.
+See [../patches/7.3/README.md](../patches/7.3/README.md).
+* __[linux-7.3-mbl-73r1-slim.tgz](linux-7.3-mbl-73r1-slim.tgz)__: uImage, DTB,
+  config, System.map, README and 25 modules in the standard `boot/` +
+  `lib/modules/` layout. [Checksums](SHA256SUMS-73r1-slim) and a
+  [vmlinux without DWARF](vmlinux-7.3-mbl-73r1-slim.xz) for symbolization.
+  Measured equal to p40 within noise (SMB xcopy 69.2 / 102.1 MiB/s vs p40
+  68.9-70.2 / 101.7 in the same-day control; dd and iperf3 identical).
+  Requires `kmod` on the rootfs (installed by default on current sid).
+
+
 ## Kernels for Debian sid (2026) ##
 Built with gcc 12 from the series in [../patches/4.19.325-cip136](../patches/4.19.325-cip136/README.md) and [../patches/4.19.325](../patches/4.19.325/README.md) (16K pages, like 4.19.99). Validated on a single-disk MBL with Debian sid + sysvinit, booted with `libata.force=noncq rng_core.default_quality=700`.
 * __[linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz)__ (latest): complete patches 0001–0022, including SATA 0020/0021 and bounded `memcpy_from_page` optimization. 16K pages, hang recovery and PERF_EVENTS are retained; copy-alignment counters are completely absent. Includes the exact tested board DTB (DMA-engine bindings, zero MAC address), config, System.map and two matching modules. This DTB differs from the older generic file. [Checksums](SHA256SUMS-p22-perf), [matching debug vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz), [build checks](../diagnostics/p22-perf/build-validation.json) and [runtime/SMB results](../../bench/README.md#p22-kernel-with-persistent-splice). Samba splice is a separate [userspace installation](../../debian/samba-splice/README.md).

@@ -1,0 +1,42 @@
+diff --git a/lib/iov_iter.c b/lib/iov_iter.c
+index 2072c04e99d0..945106a9fb49 100644
+--- a/lib/iov_iter.c
++++ b/lib/iov_iter.c
+@@ -82,6 +82,26 @@ static __always_inline
+ size_t memcpy_from_iter(void *iter_from, size_t progress,
+ 			size_t len, void *to, void *priv2)
+ {
++#ifdef CONFIG_APM821xx
++	struct iov_iter *iter = priv2;
++	unsigned long dst = (unsigned long)(to + progress);
++	unsigned long src = (unsigned long)iter_from;
++
++	/* Only mapped, page-backed kernel RAM, matching the p22 scope. */
++	if (iter && (iov_iter_is_bvec(iter) || iov_iter_is_xarray(iter) ||
++		     iov_iter_is_folioq(iter)) &&
++	    len >= 256 && !((src | dst) & 3) &&
++	    (dst < src ? src - dst >= len : dst - src >= len)) {
++		unsigned long left = __copy_tofrom_user(
++			(void __force __user *)(to + progress),
++			(const void __force __user *)iter_from, len);
++
++		if (unlikely(left))
++			memcpy(to + progress + len - left,
++			       iter_from + len - left, left);
++		return 0;
++	}
++#endif
+ 	memcpy(to + progress, iter_from, len);
+ 	return 0;
+ }
+@@ -258,8 +278,8 @@ EXPORT_SYMBOL_GPL(_copy_mc_to_iter);
+ static __always_inline
+ size_t __copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+ {
+-	return iterate_and_advance(i, bytes, addr,
+-				   copy_from_user_iter, memcpy_from_iter);
++	return iterate_and_advance2(i, bytes, addr, i,
++				    copy_from_user_iter, memcpy_from_iter);
+ }
+ 
+ size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
