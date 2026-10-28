@@ -1,4 +1,7 @@
 __pycache__/
+/audit/
 /bench/results/
+/debricker/
 /diagnostics/
 *.img.gz
+

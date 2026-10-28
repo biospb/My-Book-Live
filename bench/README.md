@@ -66,3 +66,24 @@ Exact PPC loop tests measured roughly 206 MiB/s for cold memcpy versus 318 MiB/s
 Increasing the pipe from 256 KiB to 1 MiB reduced TCP-to-file splice-call pairs per GiB from 45,967 to 11,494. Nominal pipe capacity differs from payload capacity when RX fragments consume separate slots. The unsafe global prefetch experiment that read beyond its source and corrupted DMA-owned data is not used.
 
 Local reports include `2026-10-25-wd-perf`, `2026-10-26-copydiag`, `2026-10-26-tcp-splice`, `2026-10-26-null-copy`, `2026-10-26-prefetch-distance` and `2026-10-26-smb-splice-v2` under `bench/results/`. Scripts and benchmark source are retained in Git; generated captures are not.
+
+## Linux 6.18.58 comparison
+
+The same run-copydiag methodology was applied to the 6.18.58 port (p28–p42
+variants, honest no-perf medians of three 1 GiB transfers):
+
+| Kernel | Write MiB/s | Read MiB/s | dd write / read (MB/s) | iperf3 rx / tx |
+|---|---:|---:|---|---|
+| 4.19.325-cip136 p22 (reference) | 76.4 | 106.7 | 104–117 / 113–123 | 941 / 834 Mbit/s |
+| 6.18.58 p40 (final variant) | 72.6 | 100.1 | 102–116 / 117–122 | 937 / 824 Mbit/s |
+
+Local disk and pure TCP are equal on both kernels; the SMB gap comes from
+softirq CPU in NET_RX packet processing (+4.7 percentage points) and
+iowait (+5.9), not from a single hotspot. The iperf3 client is WSL with a
+bridged network; single-stream TX tops at ~834 Mbit/s, 4-8 parallel
+streams reach 939. The historical 985 Mbit/s tx figure predates the
+current WSL network setup. Per-variant reports, softirq/IRQ diagnostics
+and the guarded trial tooling are documented in
+[../kernel/patches/6.18.58/README.md](../kernel/patches/6.18.58/README.md).
+The production NAS remains on p22.
+

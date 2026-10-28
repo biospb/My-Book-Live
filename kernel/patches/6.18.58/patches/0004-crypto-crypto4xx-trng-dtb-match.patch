@@ -1,0 +1,12 @@
+diff --git a/drivers/crypto/amcc/crypto4xx_trng.c b/drivers/crypto/amcc/crypto4xx_trng.c
+index f10a87e541ed..faaefed16514 100644
+--- a/drivers/crypto/amcc/crypto4xx_trng.c
++++ b/drivers/crypto/amcc/crypto4xx_trng.c
+@@ -63,6 +63,7 @@ static void ppc4xx_trng_enable(struct crypto4xx_device *dev, bool enable)
+ 
+ static const struct of_device_id ppc4xx_trng_match[] = {
+ 	{ .compatible = "ppc4xx-rng", },
++	{ .compatible = "ppc4xx-trng", },	/* apollo3g.dtb (My Book Live) */
+ 	{ .compatible = "amcc,ppc460ex-rng", },
+ 	{ .compatible = "amcc,ppc440epx-rng", },
+ 	{},

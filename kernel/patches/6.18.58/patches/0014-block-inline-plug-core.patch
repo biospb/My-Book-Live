@@ -1,0 +1,51 @@
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@ -1118,6 +1118,19 @@
+ }
+ EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
+ 
++void __blk_plug_init(struct blk_plug *plug, unsigned short nr_ios)
++{
++	plug->cur_ktime = 0;
++	rq_list_init(&plug->mq_list);
++	rq_list_init(&plug->cached_rqs);
++	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
++	plug->rq_count = 0;
++	plug->multiple_queues = false;
++	plug->has_elevator = false;
++	INIT_LIST_HEAD(&plug->cb_list);
++}
++EXPORT_SYMBOL_GPL(__blk_plug_init);
++
+ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
+ {
+ 	struct task_struct *tsk = current;
+@@ -1128,14 +1141,7 @@
+ 	if (tsk->plug)
+ 		return;
+ 
+-	plug->cur_ktime = 0;
+-	rq_list_init(&plug->mq_list);
+-	rq_list_init(&plug->cached_rqs);
+-	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
+-	plug->rq_count = 0;
+-	plug->multiple_queues = false;
+-	plug->has_elevator = false;
+-	INIT_LIST_HEAD(&plug->cb_list);
++	__blk_plug_init(plug, nr_ios);
+ 
+ 	/*
+ 	 * Store ordering should not be needed here, since a potential
+@@ -1167,12 +1173,6 @@
+  *   plug. By flushing the pending I/O when the process goes to sleep, we avoid
+  *   this kind of deadlock.
+  */
+-void blk_start_plug(struct blk_plug *plug)
+-{
+-	blk_start_plug_nr_ios(plug, 1);
+-}
+-EXPORT_SYMBOL(blk_start_plug);
+-
+ static void flush_plug_callbacks(struct blk_plug *plug, bool from_schedule)
+ {
+ 	LIST_HEAD(callbacks);

@@ -1,0 +1,44 @@
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -130,7 +130,23 @@
+ {
+ 	struct dw_dma *dw = to_dw_dma(dwc->chan.device);
+ 
++#ifdef CONFIG_APM821xx
++	/*
++	 * Channel configuration is constant per direction on APM821xx SATA
++	 * (single slave, fixed burst/width from DT); reprogramming CFG_LO/HI
++	 * and the interrupt masks on every transfer start costs MMIO writes
++	 * in the submission hot path. Cache it like the older 4.19 driver:
++	 * initialize once, invalidate on controller off and channel free.
++	 * dwc->dws is zeroed only in free_chan_resources, so a changed
++	 * slave config always passes through that path.
++	 */
++	if (test_bit(DW_DMA_IS_INITIALIZED, &dwc->flags))
++		return;
+ 	dw->initialize_chan(dwc);
++	set_bit(DW_DMA_IS_INITIALIZED, &dwc->flags);
++#else
++	dw->initialize_chan(dwc);
++#endif
+ 
+ 	/* Enable interrupts */
+ 	channel_set_bit(dw, MASK.XFER, dwc->mask);
+@@ -1065,6 +1081,9 @@
+ 
+ 	while (dma_readl(dw, CFG) & DW_CFG_DMA_EN)
+ 		cpu_relax();
++
++	for (unsigned int i = 0; i < dw->dma.chancnt; i++)
++		clear_bit(DW_DMA_IS_INITIALIZED, &dw->chan[i].flags);
+ }
+ 
+ void do_dw_dma_on(struct dw_dma *dw)
+@@ -1127,6 +1146,7 @@
+ 
+ 	/* Clear custom channel configuration */
+ 	memset(&dwc->dws, 0, sizeof(struct dw_dma_slave));
++	clear_bit(DW_DMA_IS_INITIALIZED, &dwc->flags);
+ 
+ 	/* Disable interrupts */
+ 	channel_clear_bit(dw, MASK.XFER, dwc->mask);

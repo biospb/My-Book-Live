@@ -58,16 +58,34 @@ Recorded CIP tests with **GRO and MAL interrupt coalescing reached 69 MiB/s SMB 
 
 ### Recorded comparison (September–October 2026)
 
-Measurements on the same single-disk MBL with 1 GbE and a Windows client. The first three rows are historical 2 GiB tests; the fourth row uses three 1 GiB writes and cold NAS readbacks with SHA256, no perf recording. All SMB figures below are MiB/s; disk dd figures are decimal MB/s. Disk and TCP figures were not repeated for the fourth configuration.
+Measurements on the same single-disk MBL with 1 GbE and a Windows client. The first three rows are historical 2 GiB tests; the fourth and fifth rows use three 1 GiB writes and cold NAS readbacks with SHA256, no perf recording. All SMB figures below are MiB/s; disk dd figures are decimal MB/s. The disk dd and TCP figures for rows 4–5 were measured on 28 October 2026 with the same client, same file and same WSL iperf3 setup (single-stream TX tops at ~834 Mbit/s with the current WSL bridged network; 4–8 parallel streams reach 939).
 
 | Configuration | SMB write / read (MiB/s) | disk dd write / read (MB/s) | TCP rx / tx |
 |---|---|---|---|
 | Jessie + 4.19.99 + Samba 4.2 | 58 / 100 | 115 / 121 | 853 / 903 Mbit/s |
 | OpenWrt 25.12 (6.12, stock drivers) | 34 / 35 | 68 / 77 | 615 / 527 Mbit/s |
 | sid + 4.19.325-cip136-mbl + Samba 4.25 | 69 / 106 | 115 / 123 | 930 / 985 Mbit/s |
-| sid + 4.19.325-cip136-p22 + Samba 4.25, pagecopy + splice | **76.3 / 106.3** | not repeated | not repeated |
+| sid + 4.19.325-cip136-p22 + Samba 4.25, pagecopy + splice | **76.3 / 106.3** | 117 / 123 | 938 / 958 Mbit/s |
+| sid + 6.18.58-mbl-p40 + Samba 4.25, pagecopy + splice | **72.6 / 100.1** | 116 / 122 | 935 / 956 Mbit/s |
 
-The fourth row is the median of three transfers on the published `4.19.325-cip136-st20-mbl-p22-wd-perf` binary: **76.34 / 106.32 MiB/s**, with write range 73.99–76.89 MiB/s and all readback hashes matching. See [p22 results](bench/README.md#p22-kernel-with-persistent-splice). Earlier pagecopy builds and the [no-perf A/B/A](bench/README.md#pagecopy-and-perf-comparison) used a different source base and are retained as historical comparisons, not relabelled as p22 measurements. The generic Debian image still contains p21 and does not include the new splice service wrapper.
+The fourth row is the median of three transfers on the published `4.19.325-cip136-st20-mbl-p22-wd-perf` binary: **76.34 / 106.32 MiB/s**, with write range 73.99–76.89 MiB/s and all readback hashes matching. See [p22 results](bench/README.md#p22-kernel-with-persistent-splice). Earlier pagecopy builds and the [no-perf A/B/A](bench/README.md#pagecopy-and-perf-comparison) used a different source base and are retained as historical comparisons, not relabelled as p22 measurements. The generic Debian image still contains p21 and does not include the new splice service wrapper. The fifth row is the 6.18.58 p40 build — see [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md).
+
+### Linux 6.18.58 experiments (October 2026)
+
+A full port of Linux 6.18.58 to the APM82181 was built and measured against
+p22 with the same honest methodology (three 1 GiB robocopy `/J` transfers,
+persistent Samba splice v2, SHA256 readbacks, no perf recording).
+
+The gap traces to softirq CPU in NET_RX packet processing (+4.7 percentage
+points) and iowait (+5.9), not to any single hotspot: local disk dd and
+pure iperf3 are equal on both kernels. The largest single win inside the
+port was fixing dcbz alignment traps on noncoherent coherent-memory
+(+39% read); the rest came from DW-DMA hot-path cleanup, EMAC TX batching
+and inline patches ported from the 4.19 series plus one upstream
+PowerPC patch. Sixteen numbered patches, guarded trial/rollback tooling,
+full per-variant measurement reports, and a precompiled p40 package
+([checksums](kernel/precompiled/SHA256SUMS-p40-perf)) are in
+[kernel/patches/6.18.58](kernel/patches/6.18.58/README.md);
 
 ## Repository layout
 
@@ -75,7 +93,8 @@ The fourth row is the median of three transfers on the published `4.19.325-cip13
 |---|---|
 | [debian/sid-sysvinit](debian/sid-sysvinit/README.md) | Debian sid rootfs/image builders, installation notes and MBL services |
 | [kernel/patches/4.19.325-cip136](kernel/patches/4.19.325-cip136/README.md) | CIP patch series, configurations, build script and validation notes |
-| [kernel/precompiled](kernel/precompiled) | Precompiled CIP kernel package and matching modules |
+| [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md) | Linux 6.18.58 port: numbered patch series, config, audit reports and trial tooling |
+| [kernel/precompiled](kernel/precompiled) | Precompiled kernel packages and matching modules (p22 and 6.18.58 p40) |
 | [samba](samba) | Samba configuration for sid |
 | [uboot/boot_multi](uboot/boot_multi/README.md) | Multiboot, rescue fallback and boot confirmation |
 | [bench](bench) | SMB and on-device benchmark scripts and recorded results |

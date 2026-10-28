@@ -31,6 +31,19 @@ You will need to update `/etc/network/if-up.d/tuneperf` to use Jumbo packets or 
 * 4.9.149: comes in three configurations : optimized for space, optimized for performance which is ~400K larger and a version of the latter which includes IO accounting (allows to run `iotop`).  In practical use though there is not much performance difference...
 * 4.19.99: high performance kernel released with patches
 
+## Kernel 6.18.58 (October 2026, experimental) ##
+Port of Linux 6.18.58 to the APM82181, tested with the same honest methodology
+as the p22 binary. See [../patches/6.18.58/README.md](../patches/6.18.58/README.md).
+* __[linux-6.18.58-mbl-p40-perf.tgz](linux-6.18.58-mbl-p40-perf.tgz)__: complete
+  numbered series 0001-0016, 16K pages, MQ `none`, U-Boot env readable
+  (`MTD_PHYSMAP`). Archive layout matches the p22 package: `boot/` (uImage,
+  DTB, config, System.map, README) and `lib/modules/` (loop, tun).
+  [Checksums](SHA256SUMS-p40-perf) and a
+  [vmlinux without DWARF](vmlinux-6.18.58-mbl-p40-perf.xz) for
+  System.map-based perf symbolization. Measured SMB 72.6 / 100.1 MiB/s
+  versus p22 76.4 / 106.7 (no-perf medians, three 1 GiB robocopy transfers
+  with SHA256 readbacks). The production NAS remains on p22.
+
 ## Kernels for Debian sid (2026) ##
 Built with gcc 12 from the series in [../patches/4.19.325-cip136](../patches/4.19.325-cip136/README.md) and [../patches/4.19.325](../patches/4.19.325/README.md) (16K pages, like 4.19.99). Validated on a single-disk MBL with Debian sid + sysvinit, booted with `libata.force=noncq rng_core.default_quality=700`.
 * __[linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz)__ (latest): complete patches 0001–0022, including SATA 0020/0021 and bounded `memcpy_from_page` optimization. 16K pages, hang recovery and PERF_EVENTS are retained; copy-alignment counters are completely absent. Includes the exact tested board DTB (DMA-engine bindings, zero MAC address), config, System.map and two matching modules. This DTB differs from the older generic file. [Checksums](SHA256SUMS-p22-perf), [matching debug vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz), [build checks](../diagnostics/p22-perf/build-validation.json) and [runtime/SMB results](../../bench/README.md#p22-kernel-with-persistent-splice). Samba splice is a separate [userspace installation](../../debian/samba-splice/README.md).
@@ -63,3 +76,4 @@ Please note that the __swap space must match the kernel block size__. So, if the
 ```
 mkswap /dev/sda3
 ```
+

@@ -1,0 +1,17 @@
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -1209,10 +1209,12 @@
+ 	 * error_handler() to execute a dummy Softreset EH session
+ 	 */
+ 	err = ata_host_activate(host, irq, sata_dwc_isr, 0, &sata_dwc_sht);
+-	if (err)
++	if (err) {
+ 		dev_err(dev, "failed to activate host");
++		goto error_out;
++	}
+ 
+-	/* Enable SATA Interrupts */
++	/* Enable SATA Interrupts only once the handler is registered */
+ 	sata_dwc_enable_interrupts(hsdev);
+ 	return 0;
+ 

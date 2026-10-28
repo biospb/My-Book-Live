@@ -1,0 +1,10 @@
+--- a/drivers/net/ethernet/ibm/emac/core.h
++++ b/drivers/net/ethernet/ibm/emac/core.h
+@@ -238,6 +238,7 @@
+ 	int				tx_cnt;
+ 	int				tx_slot;
+ 	int				ack_slot;
++	bool				xmit_more_pending;
+ 
+ 	struct mal_descriptor		*rx_desc;
+ 	int				rx_slot;

@@ -1,0 +1,6 @@
+b635560ba050141f9dc17e45caa13ce423612bf52903bc97bd3b6e19cad866f9  linux-6.18.58-mbl-p40-perf.tgz
+b21e39ee3da24cab4a570f57387f1adad986eb0bb7b161b1b70ca449feea4aa2  vmlinux-6.18.58-mbl-p40-perf.xz
+
+# inside linux-6.18.58-mbl-p40-perf.tgz:
+# boot/uImage_6.18.58-mbl-p40-perf  a562558d9c4ed3796042dade58789839154e059f1d52adb33ceeeb126670a0aa
+# boot/apollo3g.dtb                 3cd14368b2c86cf5bc323d3341d0a097ee488692f605b367852a9ad54458fbca

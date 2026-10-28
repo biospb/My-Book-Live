@@ -1,0 +1,20 @@
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -541,6 +541,8 @@
+ 
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "interrupt ATA_ERR (0x%x)\n", status);
++			/* report the device error: without it the command completes as good */
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(ap, qc);
+ 			handled = 1;
+ 			goto DONE;
+@@ -625,6 +627,8 @@
+ 		if (status & ATA_ERR) {
+ 			dev_dbg(ap->dev, "%s ATA_ERR (0x%x)\n", __func__,
+ 				status);
++			/* report the device error: without it the command completes as good */
++			qc->err_mask |= ac_err_mask(status);
+ 			sata_dwc_qc_complete(ap, qc);
+ 			handled = 1;
+ 			goto DONE;

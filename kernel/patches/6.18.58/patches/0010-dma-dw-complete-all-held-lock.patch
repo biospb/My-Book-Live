@@ -1,0 +1,30 @@
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -287,13 +287,12 @@
+ 	dmaengine_desc_callback_invoke(&cb, NULL);
+ }
+ 
+-static void dwc_complete_all(struct dw_dma *dw, struct dw_dma_chan *dwc)
++static void dwc_complete_all(struct dw_dma *dw, struct dw_dma_chan *dwc,
++			     unsigned long flags)
+ {
+ 	struct dw_desc *desc, *_desc;
+ 	LIST_HEAD(list);
+-	unsigned long flags;
+ 
+-	spin_lock_irqsave(&dwc->lock, flags);
+ 	if (dma_readl(dw, CH_EN) & dwc->mask) {
+ 		dev_err(chan2dev(&dwc->chan),
+ 			"BUG: XFER bit set, but channel not idle!\n");
+@@ -371,9 +370,8 @@
+ 			clear_bit(DW_DMA_IS_SOFT_LLP, &dwc->flags);
+ 		}
+ 
+-		spin_unlock_irqrestore(&dwc->lock, flags);
+-
+-		dwc_complete_all(dw, dwc);
++		/* pass the held lock: avoids unlock/relock on the IRQ path */
++		dwc_complete_all(dw, dwc, flags);
+ 		return;
+ 	}
+ 

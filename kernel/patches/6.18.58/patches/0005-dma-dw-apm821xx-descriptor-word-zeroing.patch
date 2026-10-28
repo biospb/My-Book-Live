@@ -1,0 +1,26 @@
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -81,9 +81,23 @@
+ 	struct dw_desc *desc;
+ 	dma_addr_t phys;
+ 
++#ifdef CONFIG_APM821xx
++	/*
++	 * Coherent memory is cache-inhibited on APM821xx. PPC32 memset()
++	 * uses dcbz for zero cache lines, which traps on this mapping.
++	 * Keep the whole descriptor zeroed, including software state.
++	 * The pool aligns descriptors to 4 bytes; memset32 counts words.
++	 */
++	BUILD_BUG_ON(sizeof(*desc) % sizeof(u32));
++	desc = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, &phys);
++	if (!desc)
++		return NULL;
++	memset32((u32 *)desc, 0, sizeof(*desc) / sizeof(u32));
++#else
+ 	desc = dma_pool_zalloc(dw->desc_pool, GFP_ATOMIC, &phys);
+ 	if (!desc)
+ 		return NULL;
++#endif
+ 
+ 	dwc->descs_allocated++;
+ 	INIT_LIST_HEAD(&desc->tx_list);

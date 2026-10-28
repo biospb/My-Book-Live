@@ -1,0 +1,54 @@
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -1416,12 +1416,24 @@
+ 	 * difference, then we can store the TMR0 value in "dev"
+ 	 * instead
+ 	 */
+-	if (emac_has_feature(dev, EMAC_FTR_EMAC4))
+-		out_be32(&p->tmr0, EMAC4_TMR0_XMIT);
+-	else
+-		out_be32(&p->tmr0, EMAC_TMR0_XMIT);
++	/*
++	 * Kick the transmitter once per batch: netdev_xmit_more() is true
++	 * while the stack queues more of the current burst. The queue stop
++	 * path below always kicks, and poll_tx frees slots under the same
++	 * lock, so a pending batch can never be stranded.
++	 */
++	++dev->tx_cnt;
++	if (!netdev_xmit_more() || unlikely(dev->tx_cnt == NUM_TX_BUFF)) {
++		if (emac_has_feature(dev, EMAC_FTR_EMAC4))
++			out_be32(&p->tmr0, EMAC4_TMR0_XMIT);
++		else
++			out_be32(&p->tmr0, EMAC_TMR0_XMIT);
++		dev->xmit_more_pending = false;
++	} else {
++		dev->xmit_more_pending = true;
++	}
+ 
+-	if (unlikely(++dev->tx_cnt == NUM_TX_BUFF)) {
++	if (unlikely(dev->tx_cnt == NUM_TX_BUFF)) {
+ 		netif_stop_queue(ndev);
+ 		DBG2(dev, "stopped TX queue" NL);
+ 	}
+@@ -1641,8 +1653,19 @@
+ 		if (n) {
+ 			dev->ack_slot = slot;
+ 			if (netif_queue_stopped(dev->ndev) &&
+-			    dev->tx_cnt < EMAC_TX_WAKEUP_THRESH)
++			    dev->tx_cnt < EMAC_TX_WAKEUP_THRESH) {
++				/* fresh xmit after wake will kick */
++				dev->xmit_more_pending = false;
+ 				netif_wake_queue(dev->ndev);
++			} else if (dev->xmit_more_pending) {
++				/* slots freed while a batch kick is pending:
++				 * flush it now so descriptors reach the MAC */
++				dev->xmit_more_pending = false;
++				if (emac_has_feature(dev, EMAC_FTR_EMAC4))
++					out_be32(&dev->emacp->tmr0, EMAC4_TMR0_XMIT);
++				else
++					out_be32(&dev->emacp->tmr0, EMAC_TMR0_XMIT);
++			}
+ 
+ 			DBG2(dev, "tx %d pkts" NL, n);
+ 		}
+

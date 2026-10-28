@@ -1,0 +1,431 @@
+diff --git a/drivers/net/ethernet/ibm/emac/Kconfig b/drivers/net/ethernet/ibm/emac/Kconfig
+index c8e5de5987ac..46333a620853 100644
+--- a/drivers/net/ethernet/ibm/emac/Kconfig
++++ b/drivers/net/ethernet/ibm/emac/Kconfig
+@@ -29,6 +29,32 @@ config IBM_EMAC_RX_COPY_THRESHOLD
+ 	depends on IBM_EMAC
+ 	default "256"
+ 
++config IBM_EMAC_INTR_COALESCE
++	bool "APM821xx interrupt coalescing"
++	depends on IBM_EMAC && APM821xx
++
++config IBM_EMAC_TX_COAL_COUNT
++	int "TX coalescing frames"
++	depends on IBM_EMAC_INTR_COALESCE
++	range 1 511
++	default 40
++
++config IBM_EMAC_TX_COAL_TIMER
++	int "TX coalescing timer ticks"
++	depends on IBM_EMAC_INTR_COALESCE
++	default 0
++
++config IBM_EMAC_RX_COAL_COUNT
++	int "RX coalescing frames"
++	depends on IBM_EMAC_INTR_COALESCE
++	range 1 511
++	default 32
++
++config IBM_EMAC_RX_COAL_TIMER
++	int "RX coalescing timer ticks"
++	depends on IBM_EMAC_INTR_COALESCE
++	default 100000
++
+ config IBM_EMAC_DEBUG
+ 	bool "Debugging"
+ 	depends on IBM_EMAC
+diff --git a/drivers/net/ethernet/ibm/emac/core.c b/drivers/net/ethernet/ibm/emac/core.c
+index 074cc6d1050e..2c4ef8ac8b0e 100644
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include <linux/module.h>
++#include <linux/tcp.h>
+ #include <linux/sched.h>
+ #include <linux/string.h>
+ #include <linux/errno.h>
+@@ -1399,6 +1400,8 @@ static inline u16 emac_tx_csum(struct emac_instance *dev,
+ 	if (emac_has_feature(dev, EMAC_FTR_HAS_TAH) &&
+ 		(skb->ip_summed == CHECKSUM_PARTIAL)) {
+ 		++dev->stats.tx_packets_csum;
++		if (IS_ENABLED(CONFIG_APM821xx) && skb_is_gso(skb))
++			return EMAC_TX_CTRL_TAH_SSR0;
+ 		return EMAC_TX_CTRL_TAH_CSUM;
+ 	}
+ 	return 0;
+@@ -1728,7 +1731,6 @@ static inline int emac_rx_sg_append(struct emac_instance *dev, int slot)
+ /* NAPI poll context */
+ static int emac_poll_rx(void *param, int budget)
+ {
+-	LIST_HEAD(rx_list);
+ 	struct emac_instance *dev = param;
+ 	int slot = dev->rx_slot, received = 0;
+ 
+@@ -1785,7 +1787,7 @@ static int emac_poll_rx(void *param, int budget)
+ 		skb->protocol = eth_type_trans(skb, dev->ndev);
+ 		emac_rx_csum(dev, skb, ctrl);
+ 
+-		list_add_tail(&skb->list, &rx_list);
++		napi_gro_receive(&dev->mal->napi, skb);
+ 	next:
+ 		++dev->stats.rx_packets;
+ 	skip:
+@@ -1829,7 +1831,6 @@ static int emac_poll_rx(void *param, int budget)
+ 		goto next;
+ 	}
+ 
+-	netif_receive_skb_list(&rx_list);
+ 
+ 	if (received) {
+ 		DBG2(dev, "rx %d BDs" NL, received);
+@@ -2271,7 +2272,50 @@ static void emac_ethtool_get_drvinfo(struct net_device *ndev,
+ 		 dev->cell_index, dev->ofdev->dev.of_node);
+ }
+ 
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++static int emac_get_coalesce(struct net_device *ndev,
++		struct ethtool_coalesce *ec, struct kernel_ethtool_coalesce *kec,
++		struct netlink_ext_ack *extack)
++{
++	struct emac_instance *dev = netdev_priv(ndev);
++	struct mal_instance *mal = dev->mal;
++
++	ec->rx_max_coalesced_frames = mal->coal_rx_frames;
++	ec->tx_max_coalesced_frames = mal->coal_tx_frames;
++	ec->rx_coalesce_usecs = mal->coal_rx_ticks / dev->plb_bus_mhz;
++	ec->tx_coalesce_usecs = mal->coal_tx_ticks / dev->plb_bus_mhz;
++	return 0;
++}
++
++static int emac_set_coalesce(struct net_device *ndev,
++		struct ethtool_coalesce *ec, struct kernel_ethtool_coalesce *kec,
++		struct netlink_ext_ack *extack)
++{
++	struct emac_instance *dev = netdev_priv(ndev);
++	struct mal_instance *mal = dev->mal;
++
++	if (!ec->rx_max_coalesced_frames || ec->rx_max_coalesced_frames > 511 ||
++	    !ec->tx_max_coalesced_frames || ec->tx_max_coalesced_frames > 511 ||
++	    ec->rx_coalesce_usecs > U32_MAX / dev->plb_bus_mhz ||
++	    ec->tx_coalesce_usecs > U32_MAX / dev->plb_bus_mhz)
++		return -EINVAL;
++	mal->coal_rx_frames = ec->rx_max_coalesced_frames;
++	mal->coal_tx_frames = ec->tx_max_coalesced_frames;
++	mal->coal_rx_ticks = ec->rx_coalesce_usecs * dev->plb_bus_mhz;
++	mal->coal_tx_ticks = ec->tx_coalesce_usecs * dev->plb_bus_mhz;
++	mal_enable_coal(mal);
++	return 0;
++}
++#endif
++
+ static const struct ethtool_ops emac_ethtool_ops = {
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS |
++		ETHTOOL_COALESCE_RX_MAX_FRAMES | ETHTOOL_COALESCE_TX_USECS |
++		ETHTOOL_COALESCE_TX_MAX_FRAMES,
++	.get_coalesce = emac_get_coalesce,
++	.set_coalesce = emac_set_coalesce,
++#endif
+ 	.get_drvinfo = emac_ethtool_get_drvinfo,
+ 
+ 	.get_regs_len = emac_ethtool_get_regs_len,
+@@ -2962,6 +3006,21 @@ static int emac_init_config(struct emac_instance *dev)
+ 	return 0;
+ }
+ 
++/* SSR0 produces 1500-byte IP packets, not an arbitrary TCP MSS. */
++static netdev_features_t emac_features_check(struct sk_buff *skb,
++		struct net_device *ndev, netdev_features_t features)
++{
++	if (skb_is_gso(skb)) {
++		unsigned int ip_len = skb_transport_offset(skb) -
++			skb_network_offset(skb) + tcp_hdrlen(skb) +
++			skb_shinfo(skb)->gso_size;
++
++		if (ip_len != 1500 || ip_len > ndev->mtu)
++			features &= ~NETIF_F_GSO_MASK;
++	}
++	return features;
++}
++
+ static const struct net_device_ops emac_netdev_ops = {
+ 	.ndo_open		= emac_open,
+ 	.ndo_stop		= emac_close,
+@@ -2984,6 +3043,7 @@ static const struct net_device_ops emac_gige_netdev_ops = {
+ 	.ndo_validate_addr	= eth_validate_addr,
+ 	.ndo_set_mac_address	= emac_set_mac_address,
+ 	.ndo_start_xmit		= emac_start_xmit_sg,
++	.ndo_features_check	= emac_features_check,
+ 	.ndo_change_mtu		= emac_change_mtu,
+ };
+ 
+@@ -3015,6 +3075,17 @@ static int emac_probe(struct platform_device *ofdev)
+ 
+ 	dev = netdev_priv(ndev);
+ 	dev->ndev = ndev;
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++	err = of_property_read_u32(np->parent->parent, "clock-frequency",
++				   &dev->plb_bus_mhz);
++	if (err)
++		goto err_gone;
++	dev->plb_bus_mhz /= 1000000;
++	if (!dev->plb_bus_mhz) {
++		err = -EINVAL;
++		goto err_gone;
++	}
++#endif
+ 	dev->ofdev = ofdev;
+ 	dev->blist = blist;
+ 	SET_NETDEV_DEV(ndev, &ofdev->dev);
+@@ -3133,6 +3204,8 @@ static int emac_probe(struct platform_device *ofdev)
+ 
+ 	if (dev->tah_dev) {
+ 		ndev->hw_features = NETIF_F_IP_CSUM | NETIF_F_SG;
++		if (IS_ENABLED(CONFIG_APM821xx))
++			ndev->hw_features |= NETIF_F_TSO;
+ 		ndev->features |= ndev->hw_features | NETIF_F_RXCSUM;
+ 	}
+ 	ndev->watchdog_timeo = 5 * HZ;
+diff --git a/drivers/net/ethernet/ibm/emac/core.h b/drivers/net/ethernet/ibm/emac/core.h
+index 89fa1683ec3c..aa1a176d24ae 100644
+--- a/drivers/net/ethernet/ibm/emac/core.h
++++ b/drivers/net/ethernet/ibm/emac/core.h
+@@ -209,6 +209,7 @@ struct emac_instance {
+ 
+ 	/* OPB bus frequency in Mhz */
+ 	u32				opb_bus_freq;
++	u32				plb_bus_mhz;
+ 
+ 	/* Cell index within an ASIC (for clk mgmnt) */
+ 	u32				cell_index;
+diff --git a/drivers/net/ethernet/ibm/emac/emac.h b/drivers/net/ethernet/ibm/emac/emac.h
+index 09d3ac374b2d..a97afd65d3a3 100644
+--- a/drivers/net/ethernet/ibm/emac/emac.h
++++ b/drivers/net/ethernet/ibm/emac/emac.h
+@@ -260,6 +260,7 @@ struct emac_regs {
+ #define EMAC_TX_CTRL_RSA		0x0040
+ #define EMAC_TX_CTRL_IVT		0x0020
+ #define EMAC_TX_CTRL_RVT		0x0010
++#define EMAC_TX_CTRL_TAH_SSR0		0x0002
+ #define EMAC_TX_CTRL_TAH_CSUM		0x000e
+ 
+ /* EMAC specific TX descriptor status fields (read access) */
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index a089e7b64bb2..38ea05d1de6a 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -28,6 +28,7 @@
+ 
+ #include "core.h"
+ #include <asm/dcr-regs.h>
++#include <asm/ppc4xx_ocm.h>
+ 
+ static int mal_count;
+ 
+@@ -222,6 +223,25 @@ static inline void mal_disable_eob_irq(struct mal_instance *mal)
+ 	MAL_DBG2(mal, "disable_irq" NL);
+ }
+ 
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++#define MAL_ICCRTX0 0x4410
++#define MAL_ICCRRX0 0x4414
++#define MAL_ICCTRTX0 0x4418
++#define MAL_ICCTRRX0 0x441c
++
++void mal_enable_coal(struct mal_instance *mal)
++{
++	if (!mal->coalescing)
++		return;
++	mtdcri(SDR0, MAL_ICCRTX0, BIT(22));
++	mtdcri(SDR0, MAL_ICCRRX0, BIT(22));
++	mtdcri(SDR0, MAL_ICCTRTX0, mal->coal_tx_ticks);
++	mtdcri(SDR0, MAL_ICCTRRX0, mal->coal_rx_ticks);
++	mtdcri(SDR0, MAL_ICCRTX0, mal->coal_tx_frames << 23);
++	mtdcri(SDR0, MAL_ICCRRX0, mal->coal_rx_frames << 23);
++}
++#endif
++
+ static irqreturn_t mal_serr(int irq, void *dev_instance)
+ {
+ 	struct mal_instance *mal = dev_instance;
+@@ -520,6 +540,11 @@ void *mal_dump_regs(struct mal_instance *mal, void *buf)
+ 	return regs + 1;
+ }
+ 
++static void mal_free_ocm(void *address)
++{
++	ppc4xx_ocm_free(address);
++}
++
+ static int mal_probe(struct platform_device *ofdev)
+ {
+ 	struct mal_instance *mal;
+@@ -531,10 +556,24 @@ static int mal_probe(struct platform_device *ofdev)
+ 	unsigned long irqflags;
+ 	irq_handler_t hdlr_serr, hdlr_txde, hdlr_rxde;
+ 
+-	mal = devm_kzalloc(&ofdev->dev, sizeof(struct mal_instance),
+-			   GFP_KERNEL);
+-	if (!mal)
+-		return -ENOMEM;
++	if (of_property_match_string(ofdev->dev.of_node,
++			"descriptor-memory", "ocm") >= 0) {
++		phys_addr_t phys;
++
++		mal = ppc4xx_ocm_alloc(&phys, sizeof(*mal), 4,
++				PPC4XX_OCM_NON_CACHED, "mal_instance");
++		if (!mal)
++			return -ENOMEM;
++		memset_io((void __iomem *)mal, 0, sizeof(*mal));
++		err = devm_add_action_or_reset(&ofdev->dev, mal_free_ocm, mal);
++		if (err)
++			return err;
++		mal->ocm_instance = true;
++	} else {
++		mal = devm_kzalloc(&ofdev->dev, sizeof(*mal), GFP_KERNEL);
++		if (!mal)
++			return -ENOMEM;
++	}
+ 
+ 	mal->index = index;
+ 	mal->ofdev = ofdev;
+@@ -622,8 +661,23 @@ static int mal_probe(struct platform_device *ofdev)
+ 	bd_size = sizeof(struct mal_descriptor) *
+ 		(NUM_TX_BUFF * mal->num_tx_chans +
+ 		 NUM_RX_BUFF * mal->num_rx_chans);
+-	mal->bd_virt = dma_alloc_coherent(&ofdev->dev, bd_size, &mal->bd_dma,
+-					  GFP_KERNEL);
++	if (mal->ocm_instance) {
++		mal->bd_virt = ppc4xx_ocm_alloc(&mal->bd_phys, bd_size, 4,
++				PPC4XX_OCM_NON_CACHED, "mal_descriptors");
++		if (mal->bd_virt) {
++			memset_io((void __iomem *)mal->bd_virt, 0, bd_size);
++			err = devm_add_action_or_reset(&ofdev->dev,
++					mal_free_ocm, mal->bd_virt);
++			if (err)
++				goto fail_dummy;
++			mal->bd_dma = lower_32_bits(mal->bd_phys);
++			set_mal_dcrn(mal, MAL_TXBADDR, upper_32_bits(mal->bd_phys));
++			set_mal_dcrn(mal, MAL_RXBADDR, upper_32_bits(mal->bd_phys));
++		}
++	}
++	if (!mal->bd_virt)
++		mal->bd_virt = dmam_alloc_coherent(&ofdev->dev, bd_size,
++						 &mal->bd_dma, GFP_KERNEL);
+ 	if (mal->bd_virt == NULL) {
+ 		err = -ENOMEM;
+ 		goto fail_dummy;
+@@ -639,8 +693,22 @@ static int mal_probe(struct platform_device *ofdev)
+ 			     sizeof(struct mal_descriptor) *
+ 			     mal_rx_bd_offset(mal, i));
+ 
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++	if (mal->num_tx_chans != 1 || mal->num_rx_chans != 1) {
++		err = -EINVAL;
++		goto fail2;
++	}
++	mal->txeob_irq = platform_get_irq(ofdev, 5);
++	mal->rxeob_irq = platform_get_irq(ofdev, 6);
++	mal->coal_tx_frames = CONFIG_IBM_EMAC_TX_COAL_COUNT;
++	mal->coal_rx_frames = CONFIG_IBM_EMAC_RX_COAL_COUNT;
++	mal->coal_tx_ticks = CONFIG_IBM_EMAC_TX_COAL_TIMER;
++	mal->coal_rx_ticks = CONFIG_IBM_EMAC_RX_COAL_TIMER;
++	mal->coalescing = true;
++#else
+ 	mal->txeob_irq = platform_get_irq(ofdev, 0);
+ 	mal->rxeob_irq = platform_get_irq(ofdev, 1);
++#endif
+ 	mal->serr_irq = platform_get_irq(ofdev, 2);
+ 
+ 	if (mal_has_feature(mal, MAL_FTR_COMMON_ERR_INT)) {
+@@ -680,6 +748,9 @@ static int mal_probe(struct platform_device *ofdev)
+ 	/* Enable all MAL SERR interrupt sources */
+ 	set_mal_dcrn(mal, MAL_IER, MAL_IER_EVENTS);
+ 
++#ifdef CONFIG_IBM_EMAC_INTR_COALESCE
++	mal_enable_coal(mal);
++#endif
+ 	/* Enable EOB interrupt */
+ 	mal_enable_eob_irq(mal);
+ 
+@@ -695,7 +766,7 @@ static int mal_probe(struct platform_device *ofdev)
+ 	return 0;
+ 
+  fail2:
+-	dma_free_coherent(&ofdev->dev, bd_size, mal->bd_virt, mal->bd_dma);
++	/* Descriptor memory is released after managed IRQ handlers. */
+  fail_dummy:
+ 	free_netdev(mal->dummy_dev);
+  fail_unmap:
+@@ -724,11 +795,7 @@ static void mal_remove(struct platform_device *ofdev)
+ 
+ 	dcr_unmap(mal->dcr_host, 0x100);
+ 
+-	dma_free_coherent(&ofdev->dev,
+-			  sizeof(struct mal_descriptor) *
+-				  (NUM_TX_BUFF * mal->num_tx_chans +
+-				   NUM_RX_BUFF * mal->num_rx_chans),
+-			  mal->bd_virt, mal->bd_dma);
++	/* Descriptor memory is released by devres. */
+ }
+ 
+ static const struct of_device_id mal_platform_match[] =
+diff --git a/drivers/net/ethernet/ibm/emac/mal.h b/drivers/net/ethernet/ibm/emac/mal.h
+index e0ddc41186a2..4d5926da6f76 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.h
++++ b/drivers/net/ethernet/ibm/emac/mal.h
+@@ -154,6 +154,9 @@ struct mal_descriptor {
+ #define MAL_RX_CTRL_SINGLE	(MAL_RX_CTRL_LAST | MAL_RX_CTRL_FIRST)
+ #define MAL_IS_SINGLE_RX(ctrl)	(((ctrl) & MAL_RX_CTRL_SINGLE) == MAL_RX_CTRL_SINGLE)
+ 
++#define MAL_TXBADDR	0x09
++#define MAL_RXBADDR	0x15
++
+ #define MAL_TX_CTRL_READY	0x8000
+ #define MAL_TX_CTRL_WRAP	0x4000
+ #define MAL_TX_CTRL_CM		0x2000
+@@ -180,6 +183,12 @@ struct mal_commac {
+ };
+ 
+ struct mal_instance {
++	bool ocm_instance;
++	phys_addr_t bd_phys;
++	bool coalescing;
++	u32 coal_tx_frames, coal_rx_frames;
++	u32 coal_tx_ticks, coal_rx_ticks;
++
+ 	int			version;
+ 	dcr_host_t		dcr_host;
+ 
+@@ -252,6 +261,8 @@ static inline int mal_has_feature(struct mal_instance *dev,
+ 		(MAL_FTRS_POSSIBLE & dev->features & feature);
+ }
+ 
++void mal_enable_coal(struct mal_instance *mal);
++
+ /* Register MAL devices */
+ int mal_init(void);
+ void mal_exit(void);
+diff --git a/drivers/net/ethernet/ibm/emac/tah.c b/drivers/net/ethernet/ibm/emac/tah.c
+index 09f6373ed2f9..a30131b4f291 100644
+--- a/drivers/net/ethernet/ibm/emac/tah.c
++++ b/drivers/net/ethernet/ibm/emac/tah.c
+@@ -60,8 +60,14 @@ void tah_reset(struct platform_device *ofdev)
+ 
+ 	/* 10KB TAH TX FIFO accommodates the max MTU of 9000 */
+ 	out_be32(&p->mr,
+-		 TAH_MR_CVR | TAH_MR_ST_768 | TAH_MR_TFS_10KB | TAH_MR_DTFP |
++		 TAH_MR_CVR | TAH_MR_ST_256 | TAH_MR_TFS_10KB | TAH_MR_DTFP |
+ 		 TAH_MR_DIG);
++	if (IS_ENABLED(CONFIG_APM821xx)) {
++		static const u32 sizes[] = { 1500, 1400, 1280, 576, 256, 68 };
++
++		for (n = 0; n < ARRAY_SIZE(sizes); n++)
++			out_be32(&p->ssr0 + n, (sizes[n] >> 1) << 17);
++	}
+ }
+ 
+ int tah_get_regs_len(struct platform_device *ofdev)

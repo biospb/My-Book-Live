@@ -1,0 +1,35 @@
+--- a/drivers/ata/sata_dwc_460ex.c
++++ b/drivers/ata/sata_dwc_460ex.c
+@@ -1043,10 +1043,31 @@
+ 			      unsigned long deadline)
+ {
+ 	struct sata_dwc_device *hsdev = HSDEV_FROM_AP(link->ap);
+-	int ret;
++	struct sata_dwc_device_port *hsdevp = HSDEVP_FROM_AP(link->ap);
++	int ret, i;
++
++	/*
++	 * EH has failed all commands, but a DMA descriptor of a timed out command
++	 * may still be active on the dw channel; the channel starts new
++	 * descriptors only when its active list is empty, so it would block every
++	 * later command. Drop it (no callbacks are run).
++	 */
++	if (hsdevp && !IS_ERR_OR_NULL(hsdevp->chan))
++		dmaengine_terminate_sync(hsdevp->chan);
+ 
+ 	ret = sata_sff_hardreset(link, class, deadline);
+ 
++	/* EH has failed all commands: forget per-tag state left behind */
++	hsdev->sactive_issued = 0;
++	hsdev->sactive_queued = 0;
++	if (hsdevp) {
++		for (i = 0; i < SATA_DWC_QCMD_MAX; i++) {
++			hsdevp->cmd_issued[i] = SATA_DWC_CMD_ISSUED_NOT;
++			hsdevp->dma_pending[i] = SATA_DWC_DMA_PENDING_NONE;
++			hsdevp->desc[i] = NULL;
++		}
++	}
++
+ 	sata_dwc_enable_interrupts(hsdev);
+ 
+ 	/* Reconfigure the DMA control register */
