@@ -12,7 +12,7 @@ The smbd start command in `/etc/init.d/smbd` adds `--startas /usr/local/libexec/
 exec env LD_PRELOAD=/usr/local/lib/samba-splice-1m-v2.so /usr/sbin/smbd "$@"
 ```
 
-Only this service startup supplies the preload; smbd children inherit it. Other SysV services and `/etc/ld.so.preload` are unchanged.
+Only this service startup supplies the preload; smbd children inherit it. Other SysV services and `/etc/ld.so.preload` are unchanged. 
 
 The [installer](install-persistent.py) checks the tested library's exact SHA256, backs up the original init script, and installs root-owned mode-0755 files through temporary files and rename. The NAS backup and installation record are under `/root/mbl-splice-persistent-20261026/`. These dated scripts describe this NAS setup, not a universal installer. The older `/usr/local/lib/samba-splice.so` is not used by the wrapper.
 

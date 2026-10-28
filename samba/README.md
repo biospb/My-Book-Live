@@ -23,3 +23,8 @@ With the DMA driver and patched splice.c/pipe.c, it's possible to achieve:
 * Samba write speed of ~95 MB/s (1GB file write, Windows 10 64-bit)
 
 However, this code has not passed the tests and leaks memory.
+
+# RPC optimization (smbd-sid.conf)
+smbd.init.d also starts `samba-dcerpcd --libexec-rpcds --np-only -D` before smbd (with `rpc start on demand helpers = no` in `smb.conf`), so the `rpcd_classic`/`rpcd_winreg` workers are preforked and alive when a client touches `\pipe\srvsvc` — without this the first RPC after idle forks 8 rpcd processes at once and visibly stalls an active transfer for a few seconds at 100% CPU.
+The current [init script](smbd.init.d) and the idle-timeout settings (`rpcd_*:idle_seconds = 86400` in `smb-sid.conf`) are checked in; 
+Without preforking the client-visible symptom is: the copy completes, then Explorer freezes for a few seconds while eight `rpcd_*` processes simultaneously initialize and exit after their 60-second idle timeout — a `[sampled] /usr/libexec/samba/rpcd_classic --list-interfaces` burst reaching 100% CPU on the single 800 MHz core.
