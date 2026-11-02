@@ -69,6 +69,17 @@ Measurements on the same single-disk MBL with 1 GbE and a Windows client. The fi
 | sid + 6.18.58-mbl-p40 + Samba 4.25, pagecopy + splice | **72.6 / 100.1** | 116 / 122 | 860 / 956 Mbit/s |
 | sid + 7.3.0-mbl-73r1-slim + Samba 4.25, pagecopy + splice | **69.2 / 102.1** | 107–109 / 113–119 | 859 / 940 Mbit/s |
 
+**Fixed-placement re-measurement (2 November 2026).** Rows 4–6 used a new file per run, and the kernels placed it differently: 4.19 files landed 2–17 GB into the data partition (outer zone, raw direct read 119–131 MB/s), 6.18 files 1387–1573 GB in (98–106 MB/s). To remove that bias, all kernels were re-measured on the same physical blocks (36–41 GB in): writes into one zero-ranged file (`fallocate -z` keeps the blocks in place), reads from one unmodified 2 GiB file, 8 × 1 MiB unbuffered requests in flight from the Windows client, medians of runs 2–4, A/B/A order:
+
+| Kernel (boot state), same file and blocks | SMB write / read (MiB/s) | CPU idle during read |
+|---|---|---|
+| 4.19 p22 (4 days uptime) | 74.0 / 102.7 | 22% |
+| 6.18.58 p40 (fresh boot) | 71.2 / 100.2 | 5% |
+| 7.3 73r1-slim (fresh boot) | 65.9 / 101.5 | 4% |
+| 4.19 p22 (fresh boot, control) | 70.0 / 99.8–103 | 21% |
+
+With placement controlled, p40 writes as fast as a freshly booted p22, and reads are disk-bound on every kernel. The new kernels use almost all CPU while reading where 4.19 leaves ~20% idle. Overwriting existing file data over SMB with the splice shim is slow (~34 MiB/s, synchronous read-modify-write of partially covered blocks); new files and Explorer's truncating copies are not affected.
+
 The fourth row is the median of three transfers on the published `4.19.325-cip136-st20-mbl-p22-wd-perf` binary: **76.34 / 106.32 MiB/s**, with write range 73.99–76.89 MiB/s and all readback hashes matching. See [p22 results](bench/README.md#p22-kernel-with-persistent-splice). Earlier pagecopy builds and the [no-perf A/B/A](bench/README.md#pagecopy-and-perf-comparison) used a different source base and are retained as historical comparisons, not relabelled as p22 measurements. The generic Debian image still contains p21 and does not include the new splice service wrapper. The fifth row is the 6.18.58 p40 build — see [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md).
 
 The sixth row is the mainline **Linux 7.3** port (73r1-slim), measured on
@@ -79,7 +90,7 @@ robocopy) reach about 70 MiB/s read on any kernel because the client
 itself sends one request at a time. Kernel-side profiling shows the
 same 1 MiB `sendfile64` path on all kernels; the disk-level dd and
 iperf3 numbers match p40 within noise. The 7.3 port carries the same
-0001–0016 series plus a read-ahead cap and a slim config (3.74 MiB
+0001–0016 series (0016 since removed) plus a read-ahead cap and a slim config (3.74 MiB
 uImage vs 4.7 MiB for p40) — see
 [kernel/patches/7.3](kernel/patches/7.3/README.md).
 
@@ -89,9 +100,11 @@ A full port of Linux 6.18.58 to the APM82181 was built and measured against
 p22 with the same honest methodology (three 1 GiB robocopy `/J` transfers,
 persistent Samba splice v2, SHA256 readbacks, no perf recording).
 
-The gap traces to softirq CPU in NET_RX packet processing (+4.7 percentage
-points) and iowait (+5.9), not to any single hotspot: local disk dd and
-pure iperf3 are equal on both kernels. The largest single win inside the
+Most of the original gap came from where the test files were placed on
+disk (see the fixed-placement table above); with the same blocks, p40
+writes as fast as a freshly booted p22, and reads are disk-bound but cost
+more CPU on 6.18. Local disk dd and pure iperf3 are equal on both kernels.
+Patch 0016 (csum prefetch) was later removed as a data-integrity risk. The largest single win inside the
 port was fixing dcbz alignment traps on noncoherent coherent-memory
 (+39% read); the rest came from DW-DMA hot-path cleanup, EMAC TX batching
 and inline patches ported from the 4.19 series plus one upstream

@@ -10,7 +10,8 @@ Port of the 6.18.58 p40 series (see ../6.18.58/README.md). Two chunkeey
 patches shipped for 7.3-rc3 turned out to be already upstream in v7.3:
 the netops fix (`7c9f391ec89c`) and GRO-Rx/MAL-desc-clear in emac —
 so only his board patch is needed. Applied: his
-`9999-powerpc-apm82181-add-WD-MyBook-Live-NAS.patch` + our 0001–0016.
+`9999-powerpc-apm82181-add-WD-MyBook-Live-NAS.patch` + our 0001–0015
+(0016 was later removed, see below).
 Conflicts vs 6.18.58:
 
 * 0001: 7.3 moved PPC4xx GPIO to drivers/gpio (`GPIO_PPC44X`); Kconfig/
@@ -21,13 +22,20 @@ Conflicts vs 6.18.58:
 * 0014-header: plug API moved from blkdev.h to include/linux/blk_plug.h
   in 7.3; the inline `blk_start_plug` hack lives there now, core part
   unchanged.
-* 0016: upstream checksum_32.S still has no dcbt prefetch (verified
-  `git diff v6.18.58..v7.3` — zero sata_dwc commits, dw-dma cosmetic
-  only; emac got devm rewrite but our hunks applied).
+* `git diff v6.18.58..v7.3`: zero sata_dwc commits, dw-dma cosmetic
+  only; emac got devm rewrite but our hunks applied.
 
 The final tree is emitted as per-patch diffs between index-tree
-snapshots (git write-tree after each step); all 13 patch files apply
+snapshots (git write-tree after each step); the patch files apply
 cleanly in sequence on pristine v7.3 (seqcheck verified).
+
+**Removed (November 2026): 0016 csum-partial dcbt prefetch.** It prefetched
+up to 128 bytes past the end of the buffer, the same mechanism that made
+the rejected 4.19 memcpy prefetch corrupt DMA buffers on the non-coherent
+44x; its gain was within noise. Details in
+[../6.18.58/README.md](../6.18.58/README.md). The precompiled 73r1-slim
+binary still contains it; rebuild from the current series.
+0016 only touched `arch/powerpc/lib/checksum_32.S`, so 0017 still applies.
 
 ## Config (config/.config.7.3-mbl-73r1-slim)
 

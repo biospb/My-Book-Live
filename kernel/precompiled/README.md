@@ -35,7 +35,8 @@ You will need to update `/etc/network/if-up.d/tuneperf` to use Jumbo packets or 
 Port of Linux 6.18.58 to the APM82181, tested with the same honest methodology
 as the p22 binary. See [../patches/6.18.58/README.md](../patches/6.18.58/README.md).
 * __[linux-6.18.58-mbl-p40-perf.tgz](linux-6.18.58-mbl-p40-perf.tgz)__: complete
-  numbered series 0001-0016, 16K pages, MQ `none`, U-Boot env readable
+  numbered series 0001-0016 (**includes 0016 csum prefetch, since removed from
+  the series as a data-integrity risk; rebuild to drop it**), 16K pages, MQ `none`, U-Boot env readable
   (`MTD_PHYSMAP`). Archive layout matches the p22 package: `boot/` (uImage,
   DTB, config, System.map, README) and `lib/modules/` (loop, tun).
   [Checksums](SHA256SUMS-p40-perf) and a
@@ -46,6 +47,7 @@ as the p22 binary. See [../patches/6.18.58/README.md](../patches/6.18.58/README.
 
 ## Kernel 7.3 (October 2026, experimental) ##
 Mainline Linux 7.3 port (73r1-slim). Same series 0001-0016 rebased on v7.3
+(the binary includes 0016, since removed from the series; rebuild to drop it)
 plus a read-ahead cap (0017) and a slim configuration: 3.74 MiB uImage
 (vs 4.7 MiB p40), unused subsystems (NFSD, F2FS, overlay, MD/DM, VLAN)
 built as modules, DEBUG_FS off, PREEMPT_LAZY with TINY_RCU.

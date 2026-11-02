@@ -31,8 +31,7 @@ for patch in 0001-powerpc-apollo3g-ocm \
              0013-emac-tx-napi-consume-skb \
              0014-block-inline-plug-header \
              0014-block-inline-plug-core \
-             0015-tcp-nagle-inline \
-             0016-powerpc-csum-partial-dcbt-prefetch; do
+             0015-tcp-nagle-inline; do
     git -C "$tree" apply "$repo/patches/$patch.patch"
 done
 
