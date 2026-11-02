@@ -16,6 +16,7 @@ About 380 CIP commits touch code built with this config (nfsd, ext4/jbd2, net, m
 | 0020 | dw dmaengine: 8K LLI blocks (a multiple of the burst), needed for PAGE_SIZE > 16K |
 | 0021 | sata_dwc: terminate the DMA channel on hardreset, so one DMA timeout cannot wedge all later commands |
 | 0022 | lib/iov_iter: bounded PPC pagecopy for aligned, nonoverlapping APM821xx page-to-kernel copies; global memcpy unchanged |
+| 0023 | dw dmaengine: zero new descriptors with `memset32()` instead of `dma_pool_zalloc()` (dcbz on cache-inhibited coherent memory raised ~350 alignment exceptions per MiB of disk I/O); backport of 6.18 0005 |
 
 ## Current package: p22 with perf, without counters
 
@@ -102,3 +103,15 @@ SMB 67.1 / 104.2 MiB/s, dd 118 / 111 MB/s, 2 GB SMB write + local cp MD5 OK, i.e
 unresponsive (ping answers, SSH banner does not, nothing on netconsole, no hung task / soft lockup
 panic) and it needed a power cycle. Memory was not short right after boot (65 MB used, 182 MB available).
 Cause not found.
+
+## p24: p23 + slim config (2026-11-02)
+
+[config/.config.4.19.325-cip136-mbl-p24-wd-perf](config/.config.4.19.325-cip136-mbl-p24-wd-perf): the 7.3 slim
+approach on 4.19. Modules (not loaded in normal use): NFSD/SUNRPC/LOCKD, F2FS, overlay, MD/DM, VLAN, inet diag,
+brd. Off: suspend/PM sleep, rfkill, BPF JIT, initrd, watchdog drivers, I2C, DEBUG_FS, SCSI proc fs, staging,
+uevent helper, /dev/port, GPIO sysfs. Kept built in: LEDS_GPIO + GPIO_74XX_MMIO (mbl-led does not modprobe),
+MTD_PHYSMAP_OF + JEDECPROBE (u-boot env), PERF_EVENTS. vmlinux 7.62 -> 6.22 MB, uImage 2.79 MB.
+
+Quick bench (iperf3, steady runs): NAS rx 941-952 Mbit idle 18-19 %, NAS tx 982-985 idle 36-48 %;
+alignment faults 0. `-Os` (p24s, vmlinux text -21 %) costs CPU: rx idle 14.8 % (softirq 27 vs 21 %),
+tx idle 28-33 % — so -O2 stays.

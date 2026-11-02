@@ -1,0 +1,49 @@
+From 1820ed75d620105d2606a6a1b62c881bce4f2988 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 04:58:41 +0300
+Subject: [PATCH] dmaengine: dw: APM821xx: zero descriptors with word stores
+
+Coherent memory is cache-inhibited on APM821xx. dma_pool_zalloc() zeroes
+a new descriptor with memset(), and the PPC32 memset uses dcbz for whole
+cache lines, which raises an alignment exception on a cache-inhibited
+mapping; the kernel then emulates it. perf record -e alignment-faults
+on a disk read showed 100% of the faults in memset <- dma_pool_alloc,
+about 350 faults per MiB read (~42k/s at disk speed).
+
+Allocate without __GFP_ZERO and clear the descriptor with memset32().
+Backport of 6.18 series patch 0005.
+---
+ drivers/dma/dw/core.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/drivers/dma/dw/core.c b/drivers/dma/dw/core.c
+index 85ba45805038..e53cf86957f7 100644
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -107,9 +107,23 @@ static struct dw_desc *dwc_desc_get(struct dw_dma_chan *dwc)
+ 	struct dw_desc *desc;
+ 	dma_addr_t phys;
+ 
++#ifdef CONFIG_APM821xx
++	/*
++	 * Coherent memory is cache-inhibited on APM821xx. PPC32 memset()
++	 * uses dcbz for zero cache lines, which traps on this mapping.
++	 * Keep the whole descriptor zeroed, including software state.
++	 * The pool aligns descriptors to 4 bytes; memset32 counts words.
++	 */
++	BUILD_BUG_ON(sizeof(*desc) % sizeof(u32));
++	desc = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, &phys);
++	if (unlikely(!desc))
++		return NULL;
++	memset32((u32 *)desc, 0, sizeof(*desc) / sizeof(u32));
++#else
+ 	desc = dma_pool_zalloc(dw->desc_pool, GFP_ATOMIC, &phys);
+ 	if (unlikely(!desc))
+ 		return NULL;
++#endif
+ 
+ 	dwc->descs_allocated++;
+ 	INIT_LIST_HEAD(&desc->tx_list);
+-- 
+2.43.0
+
