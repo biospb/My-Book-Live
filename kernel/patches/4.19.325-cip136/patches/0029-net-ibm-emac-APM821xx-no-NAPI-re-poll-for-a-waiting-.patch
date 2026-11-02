@@ -1,0 +1,76 @@
+From 516e5ff6d99b95c19a4abc0859a2db80f55fb6c6 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Mon, 2 Nov 2026 16:29:50 +0300
+Subject: [PATCH] net: ibm: emac: APM821xx: no NAPI re-poll for a waiting RX
+ packet, lighter TX lock
+
+Two per-poll costs in mal_poll(), found with softirq_raise/napi_poll
+tracepoints during a 100 MiB/s SMB read:
+
+1. After napi_complete_done() the "rotting packet" check re-scheduled NAPI
+   whenever another frame was already in the RX ring. At gigabit rates one
+   almost always is, so on 5.10 NAPI kept re-polling itself from
+   ksoftirqd, 2-3 packets per poll: 4800 polls/s (87 % from ksoftirqd) vs
+   3600/s on 4.19, and the CPU never reached idle. The RX coalescing
+   interrupt still fires for that frame once EOB is enabled again, so
+   only the RX-stopped case (descriptor error recovery) re-polls now.
+
+2. poll_tx() took netif_tx_lock_bh(), which also freezes the queue; its
+   unlock calls netif_schedule_queue() and raises NET_TX on every poll
+   (~3500 NET_TX softirqs/s doing nothing). Take only the TX queue lock,
+   which is what .ndo_start_xmit runs under.
+
+Free CPU during SMB read (SCHED_IDLE soaker, 3 runs): 5.10 22.1 -> 26.1 %,
+4.19 33.6 -> 33.1 % (no change). NET_TX softirqs ~0/s on both.
+SMB, iperf3, ping latency unchanged; adaptive ping (4 x 20000 x 1400 B)
+shows no stuck RX packets beyond what the unpatched kernels show.
+Integrity check OK.
+---
+ drivers/net/ethernet/ibm/emac/mal.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index 8a7435915955..295bf30381e8 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -722,9 +722,14 @@ static void parse_tx_error(struct emac_instance *dev, u16 ctrl) {
+ 
+ #define netif_queue_stopped(ndev) test_bit(__QUEUE_STATE_DRV_XOFF, &ndev->_tx[0].state)
+ static __always_inline void poll_tx(struct emac_instance *dev) {
++	/* Only the TX queue lock (what .ndo_start_xmit runs under). netif_tx_lock()
++	 * also freezes the queue, and its unlock reschedules the qdisc: one
++	 * NET_TX softirq per NAPI poll for nothing. */
++	struct netdev_queue *txq = netdev_get_tx_queue(dev->ndev, 0);
++
+ 	DBG2(dev, "poll_tx, %d %d" NL, dev->tx_cnt, dev->ack_slot);
+ 
+-    netif_tx_lock_bh(dev->ndev);
++	__netif_tx_lock_bh(txq);
+ 	if (likely(dev->tx_cnt)) {	// We have something to transmit
+     	register u16 ctrl;
+ 		register int slot = dev->ack_slot, n = 0;
+@@ -765,7 +770,7 @@ static __always_inline void poll_tx(struct emac_instance *dev) {
+ 		}
+ 	}
+ #endif
+-	netif_tx_unlock_bh(dev->ndev);
++	__netif_tx_unlock_bh(txq);
+ }
+ 
+ /* NAPI poll context */
+@@ -870,7 +875,11 @@ static int mal_poll(struct napi_struct *napi, int budget) {
+         continue_if(unlikely(test_bit(MAL_COMMAC_POLL_DISABLED, &mc->flags)));
+ 
+ 		//if (unlikely(mc->ops->peek_rx(dev) || test_bit(MAL_COMMAC_RX_STOPPED, &mc->flags))) {
+-		if (unlikely(peek_rx_sg(dev) || test_bit(MAL_COMMAC_RX_STOPPED, &mc->flags))) {
++		/* No re-poll for a packet that is already waiting in the ring: the
++		 * RX coalescing interrupt still fires for it once EOB is enabled again.
++		 * Re-polling here kept NAPI spinning 2-3 packets at a time from
++		 * ksoftirqd under SMB read (5.10: 4000 extra polls/s, CPU never idle). */
++		if (unlikely(test_bit(MAL_COMMAC_RX_STOPPED, &mc->flags))) {
+ 			MAL_DBG2(mal, "rotting packet" NL);
+ 			if (!napi_reschedule(napi))	return received; //	goto more_work;
+ 
+-- 
+2.43.0
+

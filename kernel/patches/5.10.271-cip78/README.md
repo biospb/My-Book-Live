@@ -22,6 +22,7 @@ replaced. Boots in the test slot, `mbl-boot` confirm works, integrity checks pas
 | 0020 | math64: `div_u64_rem()`/`div_u64()` always inline | 0027 |
 | 0021 | EMAC: count TX descriptors exactly before filling the ring (TX hang fix) | 0028 |
 | 0022 | EMAC: direct streaming DMA mapping (no `dma_map_page_attrs()` dispatch per packet) | — |
+| 0023 | EMAC/MAL: no NAPI re-poll for a waiting RX packet, TX queue lock instead of `netif_tx_lock` | 0029 |
 
 Config: [config/.config.5.10.271-cip78-mbl-510r5](config/.config.5.10.271-cip78-mbl-510r5) (slim, -O2, perf on).
 Config trap: `olddefconfig` drops `MTD_PHYSMAP_OF`; it needs `MTD_PHYSMAP=y`, `MTD_PHYSMAP_OF=y` and
@@ -85,3 +86,40 @@ iperf3 at a fixed 600 Mbit/s, 3 runs: `dma_map_page_attrs` (510r5: 126-154 sampl
 is gone, `__dma_sync` rises by ~90 rx (the sync itself stays); CPU idle rx 25-29 -> 30-32 %, tx within noise.
 SMB 510r7: write 74.6-80.4, read 97.9-102.8 (one 77.7 outlier, as on every kernel). Integrity check OK.
 A 4.19 counterpart is not needed: 4.19 calls `dma_nommu_map_page` without the extra dispatch.
+
+## 0023: no NAPI re-poll for a waiting RX packet, lighter TX lock (510r8), 2026-11-02
+
+The "CPU idle during read ~5 % vs ~22 %" above is partly an accounting effect and partly real.
+`/proc/stat` mixes exact NO_HZ idle/iowait time with 100 Hz tick samples for user/sys/softirq, and
+`perf record` at 1 kHz eats idle time itself. A SCHED_IDLE busy loop that counts iterations
+([bench/soak.c](../../../bench/soak.c); free CPU = rate under load / rate on an idle system) avoids both. Free CPU during the SMB read, 3 runs each:
+
+| Kernel | free CPU | NET_RX softirqs/s | NET_TX softirqs/s |
+|---|---|---|---|
+| 4.19 p28 | 32.8-34.8 % (33.6) | 2600 | 2600 |
+| 4.19 p31 (p28 + 0029) | 32.5-33.7 % (33.1) | 2450 | 0 |
+| 510r7 | 21.1-23.6 % (22.1) | 6600 | 6400 |
+| 510r8 (510r7 + 0023) | 24.3-27.1 % (26.1) | 2300 | ~10 |
+
+The gap is real (~11 points), not an accounting artifact. Tracepoints (`irq:softirq_raise` with stack
+trace triggers, `napi:napi_poll`; FTRACE + EVENT_TRACING without the function tracer) showed where part of it goes:
+
+- After `napi_complete_done()` the "rotting packet" check in `mal_poll()` re-scheduled NAPI whenever another
+  frame was already in the ring. On 5.10 this kept NAPI re-polling itself from ksoftirqd, 2-3 packets per poll
+  (4800 polls/s, 87 % of them in ksoftirqd; 4.19: 3600/s, 6 %). The RX coalescing interrupt still fires for
+  that frame, so 0023 re-polls only for the RX-stopped case.
+- `poll_tx()` took `netif_tx_lock_bh()`; its unlock reschedules the qdisc and raised NET_TX on every poll.
+  0023 takes only the TX queue lock. This one is in 4.19 too (0029 there).
+
+Checks: SMB 510r8 write 76.7-82.2, read 100.0-102.8 MiB/s; iperf3 916-950 Mbit; ping idle 0.87 ms,
+under NAS TX 2.4 ms, under NAS RX 7.8 ms (same on all kernels); adaptive ping 4 x 20000 x 1400 B
+shows no stuck RX packet beyond the rare 0.7-1.8 s stall that every kernel shows from the WSL client
+(none in 160 000 pings from the NAS to Windows, so it is in the WSL network path). Integrity check OK.
+
+The other ~7 points are spread over the 5.10 stack (perf, same load, 2 runs each, samples p28 -> 510r8):
+blk-mq completion with interrupts off (`dma_dwc_xfer_done` 77 -> 442, attribution skew), list RX with the
+route hint (`ip_list_rcv`, `ip_route_use_hint`, `fib_validate_source`, ~+500), softirq entry (+318),
+slab and page cache changes. `gro_normal_batch=1` and a locked qdisc (`pfifo`) changed nothing.
+
+Side finding: the old `/etc/cron.d/keep-rpcd` job (python3 + smbclient every 2 minutes) took ~2 s of full CPU and
+caused the "one slow run of four" (~77 MiB/s) seen in every SMB series. It is disabled now.

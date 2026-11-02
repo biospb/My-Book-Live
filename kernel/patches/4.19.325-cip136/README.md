@@ -188,3 +188,11 @@ read 99.7 MiB/s (p26: 78.2 / 99.8 over 8 runs, p22: 74.4 / 99.6). Alignment faul
   queues already keep the in-flight data per socket at ~256 KB, so BQL has nothing to cut; the qdisc never
   builds a backlog (requeues 0), so `xmit_more` is rarely set.
 - No errors, tx_undo 0. Not adopted (no measurable gain); the change is small if it is needed later.
+
+## 0029: no NAPI re-poll for a waiting RX packet, lighter TX lock (2026-11-02)
+
+Same driver change as 5.10 0023 (details and measurements in [../5.10.271-cip78](../5.10.271-cip78/README.md)).
+On 4.19 NAPI did not get stuck re-polling, so the gain is only the NET_TX softirq per poll (~3500/s) that
+`netif_tx_lock_bh()` raised. Free CPU during the SMB read (SCHED_IDLE soaker): p28 33.6 %, p31 (p28 + 0029) 33.1 %,
+within noise. SMB, same session, no keep-rpcd cron: p28 write 77.1-80.8 / read 100.5-102.1, p31 78.1-83.6 /
+99.9-104.5 MiB/s. Kept for a common driver with 5.10. p31 is not the main kernel (main stays p28).
