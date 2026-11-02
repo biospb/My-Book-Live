@@ -156,3 +156,11 @@ Same day, same disk temperature (66-67 C), 3 runs per kernel after >= 4 min upti
 Integrity (1 GiB raw read direct + buffered, 1.6 GB file copy) matches the reference, alignment faults 0.
 Config: [config/.config.4.19.325-cip136-mbl-p26-wd-perf](config/.config.4.19.325-cip136-mbl-p26-wd-perf).
 5.10 port of 0023-0027: [../5.10.271-cip78](../5.10.271-cip78/README.md).
+
+### Tried after p26, not in the series
+
+- 6.18 0012 tx batching (`xmit_more`): not ported. TSO is on and the driver has no BQL, so the qdisc never
+  dequeues in bulk and `skb->xmit_more` is practically never set on 4.19.
+- 6.18 0013 `napi_consume_skb()` in poll_tx (p27): CPU at a fixed 600 Mbit rx ~66.9 % vs p26 ~67.6 %, tx 60.2 vs
+  59.7 % — no measurable change.
+- `STACKPROTECTOR_STRONG` off (p27s, text -3.2 %): rx unchanged, tx ~57.6 vs ~60 %, at the noise limit. Kept on.
