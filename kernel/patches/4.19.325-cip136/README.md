@@ -164,3 +164,15 @@ Config: [config/.config.4.19.325-cip136-mbl-p26-wd-perf](config/.config.4.19.325
 - 6.18 0013 `napi_consume_skb()` in poll_tx (p27): CPU at a fixed 600 Mbit rx ~66.9 % vs p26 ~67.6 %, tx 60.2 vs
   59.7 % — no measurable change.
 - `STACKPROTECTOR_STRONG` off (p27s, text -3.2 %): rx unchanged, tx ~57.6 vs ~60 %, at the noise limit. Kept on.
+
+## 0028: exact TX descriptor count (2026-11-02)
+
+`emac_start_xmit_sg()` estimated descriptors as `len >> 12`, but MAL chunks are 4080 bytes (a 16K fragment
+takes 5, not 4), and `emac_xmit_finish()` stopped the queue only on `tx_cnt == NUM_TX_BUFF`. Near a full ring
+this overwrote descriptors not sent yet. On 5.10 it hung TX under SMB reads (`mal0: TX descriptor error`, ~2.5 min
+until the netdev watchdog); details in [../5.10.271-cip78](../5.10.271-cip78/README.md) (0021 there).
+On 4.19 it was latent: the ring never got close to full (`tx_undo` 0 after 4 SMB runs, 597 on 5.10).
+0028 counts the exact chunks before touching the ring and stops the queue on `>=`.
+
+p28 = p26 + 0028 (p27 not included). SMB fixed-placement bench, 4 runs, disk 66-67 C: write median 77.5,
+read 99.7 MiB/s (p26: 78.2 / 99.8 over 8 runs, p22: 74.4 / 99.6). Alignment faults 0, no MAL errors.

@@ -20,6 +20,7 @@ replaced. Boots in the test slot, `mbl-boot` confirm works, integrity checks pas
 | 0018 | MAL instance in cached RAM, rings in OCM | 0025 |
 | 0019 | dw: preallocated LLI per descriptor slot | 0026 |
 | 0020 | math64: `div_u64_rem()`/`div_u64()` always inline | 0027 |
+| 0021 | EMAC: count TX descriptors exactly before filling the ring (TX hang fix) | 0028 |
 
 Config: [config/.config.5.10.271-cip78-mbl-510r5](config/.config.5.10.271-cip78-mbl-510r5) (slim, -O2, perf on).
 Config trap: `olddefconfig` drops `MTD_PHYSMAP_OF`; it needs `MTD_PHYSMAP=y`, `MTD_PHYSMAP_OF=y` and
@@ -43,3 +44,31 @@ iperf3 NAS tx at a fixed 600 Mbit/s (10 s):
   now multiply, `__div64_32` on tx drops to the 4.19 level (~1.4 % CPU less). The CPU load at 600 Mbit stays
   within the iperf client noise.
 - 5.10 still uses a few % more CPU than 4.19 at the same network rate (softirq 25-30 % vs 15-18 % on rx).
+
+## 0021: TX ring overflow (SMB read hang), 2026-11-02
+
+510r5 under the fixed-placement SMB bench (`diagnostics/fixed-placement-bench.ps1`) hung twice in two boots,
+both times in the second read run: `mal0: TX descriptor error (TXDEIR = 0x80000000)`, then no TX for ~2.5 min
+until `NETDEV WATCHDOG ... transmit queue 0 timed out` reset the EMAC. The NAS did not reboot.
+
+Cause, in `emac_start_xmit_sg()` (same code in the 4.19 driver): the descriptor estimate was `len >> 12`, but
+MAL splits buffers into 4080-byte chunks, so a 16K fragment takes 5 descriptors, not 4. Near a full ring
+`tx_cnt` reached 257, and `emac_xmit_finish()` stopped the queue only on `tx_cnt == 256`: the next frames
+overwrote descriptors MAL had not sent yet. 0021 counts the exact chunks of the head and every fragment
+before touching the ring (undo path removed) and stops the queue on `>=`.
+
+A diagnostic build (510r6) logged 36 frames in 8 SMB runs where the old check would have overflowed the
+ring (e.g. `tx_cnt 236, need 21`); with the fix all 8 runs passed. 5.10 hits it and 4.19 did not, most likely
+because TX completion is slower on 5.10 (softirq ~38 % vs ~20 % at the same rate) and the ring runs fuller.
+The 6.18 and 7.3 series use the upstream driver, which counts with `mal_tx_chunks()` per fragment and is not affected.
+
+SMB fixed-placement bench, medians write / read MiB/s, smbd with the splice-v3 shim, disk 64-68 C:
+
+| Kernel | runs | write | read | CPU idle during read |
+|---|---|---|---|---|
+| 4.19 p22 | 8 | 74.4 | 99.6 | ~22 % |
+| 4.19 p26 | 8 | 78.2 | 99.8 | ~22 % |
+| 510r4 | 4 | 71.6 | 97.0 | ~5 % |
+| 510r5 (hangs) | 6 | 74.0 | 98.1 | ~5 % |
+| 510r6 (0021 + diag) | 8 | 77.5 | 98.6 | ~5 % |
+| 4.19 p28 (p26 + 0028) | 4 | 77.5 | 99.7 | ~21 % |

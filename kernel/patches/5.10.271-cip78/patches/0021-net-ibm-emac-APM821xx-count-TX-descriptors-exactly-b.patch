@@ -1,0 +1,84 @@
+From a30e6178db6e188d8ec36c4ac28efd9ad4d3ba13 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 11:18:44 +0300
+Subject: [PATCH] net: ibm: emac: APM821xx: count TX descriptors exactly before
+ filling the ring
+
+emac_start_xmit_sg() estimated the descriptors a fragment needs as
+len >> 12, but MAL splits buffers into MAL_MAX_TX_SIZE (4080 byte)
+chunks: a 16K fragment takes 5 descriptors, not 4. Near a full ring
+tx_cnt could reach NUM_TX_BUFF + 1, and emac_xmit_finish() stopped the
+queue only on tx_cnt == NUM_TX_BUFF, so the next frames overwrote
+descriptors MAL had not sent yet. Seen on 5.10 under SMB reads as
+"mal0: TX descriptor error (TXDEIR = 0x80000000)" followed by a TX hang
+until the netdev watchdog reset the EMAC (~2.5 min).
+
+Count the exact number of chunks of the linear part and of every
+fragment (DIV_ROUND_UP by MAL_MAX_TX_SIZE) before touching the ring and
+stop the queue if they do not fit; the undo path is no longer needed.
+Stop the queue on tx_cnt >= NUM_TX_BUFF as a guard.
+---
+ drivers/net/ethernet/ibm/emac/core.c | 29 ++++++++++++++--------------
+ 1 file changed, 14 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/core.c b/drivers/net/ethernet/ibm/emac/core.c
+index 8bbef162c502..5a90a9a0ce4f 100644
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -1277,7 +1277,7 @@ static __always_inline int emac_xmit_finish(struct emac_instance *dev, struct ne
+ #else
+     out_be32(dev->tmr0, EMAC_TMR0_XMIT);
+ #endif
+-	if (unlikely(++dev->tx_cnt == NUM_TX_BUFF)) {
++	if (unlikely(++dev->tx_cnt >= NUM_TX_BUFF)) {
+ 		netif_stop_queue(ndev);
+ 		DBG2(dev, "stopped TX queue" NL);
+ 	}
+@@ -1367,10 +1367,19 @@ static netdev_tx_t emac_start_xmit_sg(struct sk_buff *skb, struct net_device *nd
+ 
+ 	len -= skb->data_len;
+ 
+-	/* Note, this is only an *estimation*, we can still run out of empty slots because
+-	 * of the additional fragmentation into MAL_MAX_TX_SIZE-sized chunks */
+-	if (unlikely(dev->tx_cnt + nr_frags + MAL_ESTIMATE_TX_CHUNKS(len) > NUM_TX_BUFF))
+-		goto stop_queue;
++	/* Count the exact number of descriptors before touching the ring. The old
++	 * len >> 12 estimate is short by one per 16K fragment (chunks are 4080 bytes),
++	 * which let tx_cnt pass NUM_TX_BUFF and overwrite in-flight descriptors. */
++	{
++		unsigned int need = max_t(unsigned int, 1, DIV_ROUND_UP(len, MAL_MAX_TX_SIZE));
++
++		for (i = 0; i < nr_frags; ++i)
++			need += DIV_ROUND_UP(skb_frag_size(&skb_shinfo(skb)->frags[i]), MAL_MAX_TX_SIZE);
++		if (unlikely(dev->tx_cnt + need > NUM_TX_BUFF)) {
++			++dev->estats.tx_undo;
++			goto stop_queue;
++		}
++	}
+ 
+ 	ctrl = EMAC_TX_CTRL_GFCS| EMAC_TX_CTRL_GP| MAL_TX_CTRL_READY| MAL_TX_CTRL_INTR| emac_tx_csum(dev, skb);
+ 	slot = slot_prev = dev->tx_slot;
+@@ -1389,7 +1398,6 @@ static netdev_tx_t emac_start_xmit_sg(struct sk_buff *skb, struct net_device *nd
+ 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+ 		len = skb_frag_size(frag);
+ 
+-		if (unlikely(dev->tx_cnt + MAL_ESTIMATE_TX_CHUNKS(len) >= NUM_TX_BUFF)) goto undo_frame;
+ 		pd = skb_frag_dma_map(dev->ofdev_dev, frag, 0, len, DMA_TO_DEVICE);
+ 		slot = emac_xmit_split(dev, slot, pd, len, i == nr_frags - 1, ctrl);
+ 	}
+@@ -1407,15 +1415,6 @@ static netdev_tx_t emac_start_xmit_sg(struct sk_buff *skb, struct net_device *nd
+ 
+ 	return emac_xmit_finish(dev, ndev, skb->len);
+ 
+- undo_frame:
+-	/* Well, too bad. Our previous estimation was overly optimistic. Undo everything */
+-	while (slot != dev->tx_slot) {
+-		dev->tx_desc[slot].ctrl = 0 | (slot == (NUM_TX_BUFF - 1) ? MAL_TX_CTRL_WRAP : 0);
+-		--dev->tx_cnt;
+-		if (--slot < 0)	slot = NUM_TX_BUFF - 1;
+-	}
+-	++dev->estats.tx_undo;
+-
+  stop_queue:
+ 	netif_stop_queue(ndev);
+ 	DBG2(dev, "stopped TX queue" NL);
