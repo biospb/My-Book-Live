@@ -1,0 +1,181 @@
+From f2eb559e5803a3a003e12990b33b32b31c8373c1 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 06:30:47 +0300
+Subject: [PATCH 19/20] dmaengine: dw: APM821xx: pair each descriptor slot with
+ a preallocated LLI
+
+Every LLI came from dma_pool_alloc() and went back with dma_pool_free(),
+both under the pool spinlock with interrupts off, ~160 times per SATA
+command. Allocate one coherent array of LLIs at probe time; slot i of the
+software descriptor state owns lli[i] (phys = base + i * sizeof(lli)).
+The slot free list keeps working for out-of-order frees (terminate).
+Descriptors beyond the 192 slots still use kmem_cache + dma_pool.
+The LLIs stay in DDR: the DMA master is 32-bit, OCM is above 4 GiB.
+---
+ drivers/dma/dw/core.c | 76 ++++++++++++++++++++++++++++++-------------
+ drivers/dma/dw/regs.h |  2 ++
+ 2 files changed, 55 insertions(+), 23 deletions(-)
+
+diff --git a/drivers/dma/dw/core.c b/drivers/dma/dw/core.c
+index 110607d3d39e..56b21cdb2ded 100644
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -41,9 +41,20 @@
+ #define DW_META_OCM	0
+ #endif
+ #define DW_META_SLOTS	192
++#define DW_META_SZ	ALIGN(sizeof(struct dw_desc), sizeof(u32))
+ 
+-static struct dw_desc *dw_meta_alloc(struct dw_dma *dw)
++static void dw_meta_free(struct dw_dma *dw, struct dw_desc *desc);
++
++/*
++ * Slot i owns the hardware LLI lli_base[i] (coherent DDR: the DMA master
++ * is 32-bit, OCM sits above 4 GiB). A slot therefore needs no dma_pool
++ * call. Descriptors beyond the slots take their state from the
++ * kmem_cache and their LLI from the dma_pool.
++ */
++static struct dw_desc *dw_meta_alloc(struct dw_dma *dw, dma_addr_t *phys)
+ {
++	struct dw_desc *desc;
++	struct dw_lli *lli;
+ 	unsigned long flags;
+ 	void *d;
+ 
+@@ -52,9 +63,30 @@ static struct dw_desc *dw_meta_alloc(struct dw_dma *dw)
+ 	if (d)
+ 		dw->meta_free = *(void **)d;
+ 	spin_unlock_irqrestore(&dw->meta_lock, flags);
+-	if (!d)
+-		d = kmem_cache_alloc(dw->meta_cache, GFP_ATOMIC);
+-	return d;
++
++	if (d && dw->lli_base) {
++		unsigned int i = (d - dw->meta_base) / DW_META_SZ;
++
++		lli = &dw->lli_base[i];
++		*phys = dw->lli_phys + i * sizeof(struct dw_lli);
++	} else {
++		if (!d)
++			d = kmem_cache_alloc(dw->meta_cache, GFP_ATOMIC);
++		if (unlikely(!d))
++			return NULL;
++		lli = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, phys);
++		if (unlikely(!lli)) {
++			desc = d;
++			desc->lli = NULL;
++			dw_meta_free(dw, desc);
++			return NULL;
++		}
++	}
++	desc = d;
++	memset32((u32 *)lli, 0, sizeof(*lli) / sizeof(u32));
++	memset32((u32 *)desc, 0, sizeof(*desc) / sizeof(u32));
++	desc->lli = lli;
++	return desc;
+ }
+ 
+ static void dw_meta_free(struct dw_dma *dw, struct dw_desc *desc)
+@@ -63,18 +95,22 @@ static void dw_meta_free(struct dw_dma *dw, struct dw_desc *desc)
+ 	void *d = desc;
+ 
+ 	if (d >= dw->meta_base && d < dw->meta_end) {
++		if (!dw->lli_base && desc->lli)
++			dma_pool_free(dw->desc_pool, desc->lli, desc->txd.phys);
+ 		spin_lock_irqsave(&dw->meta_lock, flags);
+ 		*(void **)d = dw->meta_free;
+ 		dw->meta_free = d;
+ 		spin_unlock_irqrestore(&dw->meta_lock, flags);
+ 	} else {
++		if (desc->lli)
++			dma_pool_free(dw->desc_pool, desc->lli, desc->txd.phys);
+ 		kmem_cache_free(dw->meta_cache, d);
+ 	}
+ }
+ 
+ static int dw_meta_init(struct dw_dma *dw, struct device *dev)
+ {
+-	size_t sz = ALIGN(sizeof(struct dw_desc), sizeof(u32));
++	size_t sz = DW_META_SZ;
+ 	void *base = NULL;
+ 	phys_addr_t phys;
+ 	int i;
+@@ -102,9 +138,15 @@ static int dw_meta_init(struct dw_dma *dw, struct device *dev)
+ 		*(void **)d = dw->meta_free;
+ 		dw->meta_free = d;
+ 	}
+-	dev_info(dev, "descriptor state: %d slots of %zu bytes in %s\n",
++	dw->lli_base = NULL;
++	if (base)
++		dw->lli_base = dmam_alloc_coherent(dev,
++				DW_META_SLOTS * sizeof(struct dw_lli),
++				&dw->lli_phys, GFP_KERNEL);
++	dev_info(dev, "descriptor state: %d slots of %zu bytes in %s, LLIs %s\n",
+ 		 base ? DW_META_SLOTS : 0, sz,
+-		 dw->meta_ocm ? "OCM" : base ? "cached RAM" : "kmem_cache only");
++		 dw->meta_ocm ? "OCM" : base ? "cached RAM" : "kmem_cache only",
++		 dw->lli_base ? "preallocated" : "from dma_pool");
+ 	return 0;
+ }
+ #endif
+@@ -190,27 +232,17 @@ static struct dw_desc *dwc_desc_get(struct dw_dma_chan *dwc)
+ 	dma_addr_t phys;
+ 
+ #ifdef CONFIG_APM821xx
+-	struct dw_lli *lli;
+-
+ 	/*
+ 	 * Coherent memory is cache-inhibited on APM821xx, and so is OCM.
+ 	 * PPC32 memset() uses dcbz for whole cache lines, which traps on
+ 	 * such mappings: zero with word stores. Only the 7-word LLI is in
+-	 * the coherent pool; the software state is a separate slot.
++	 * coherent memory; the software state is a separate slot.
+ 	 */
+ 	BUILD_BUG_ON(sizeof(*desc) % sizeof(u32));
+-	BUILD_BUG_ON(sizeof(*lli) % sizeof(u32));
+-	lli = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, &phys);
+-	if (unlikely(!lli))
+-		return NULL;
+-	desc = dw_meta_alloc(dw);
+-	if (unlikely(!desc)) {
+-		dma_pool_free(dw->desc_pool, lli, phys);
++	BUILD_BUG_ON(sizeof(struct dw_lli) % sizeof(u32));
++	desc = dw_meta_alloc(dw, &phys);
++	if (unlikely(!desc))
+ 		return NULL;
+-	}
+-	memset32((u32 *)lli, 0, sizeof(*lli) / sizeof(u32));
+-	memset32((u32 *)desc, 0, sizeof(*desc) / sizeof(u32));
+-	desc->lli = lli;
+ #else
+ 	desc = dma_pool_zalloc(dw->desc_pool, GFP_ATOMIC, &phys);
+ 	if (unlikely(!desc))
+@@ -237,7 +269,6 @@ static void dwc_desc_put(struct dw_dma_chan *dwc, struct dw_desc *desc)
+ 	list_for_each_entry_safe(child, _next, &desc->tx_list, desc_node) {
+ 		list_del(&child->desc_node);
+ #ifdef CONFIG_APM821xx
+-		dma_pool_free(dw->desc_pool, child->lli, child->txd.phys);
+ 		dw_meta_free(dw, child);
+ #else
+ 		dma_pool_free(dw->desc_pool, child, child->txd.phys);
+@@ -246,7 +277,6 @@ static void dwc_desc_put(struct dw_dma_chan *dwc, struct dw_desc *desc)
+ 	}
+ 
+ #ifdef CONFIG_APM821xx
+-	dma_pool_free(dw->desc_pool, desc->lli, desc->txd.phys);
+ 	dw_meta_free(dw, desc);
+ #else
+ 	dma_pool_free(dw->desc_pool, desc, desc->txd.phys);
+diff --git a/drivers/dma/dw/regs.h b/drivers/dma/dw/regs.h
+index 3cd4cce40426..3a4aeea2ea9c 100644
+--- a/drivers/dma/dw/regs.h
++++ b/drivers/dma/dw/regs.h
+@@ -323,6 +323,8 @@ struct dw_dma {
+ 	void			*meta_end;
+ 	bool			meta_ocm;
+ 	struct kmem_cache	*meta_cache;	/* fallback when slots run out */
++	struct dw_lli		*lli_base;	/* LLI of slot i = lli_base[i] */
++	dma_addr_t		lli_phys;
+ #endif
+ };
+ 

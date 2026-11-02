@@ -18,6 +18,9 @@ About 380 CIP commits touch code built with this config (nfsd, ext4/jbd2, net, m
 | 0022 | lib/iov_iter: bounded PPC pagecopy for aligned, nonoverlapping APM821xx page-to-kernel copies; global memcpy unchanged |
 | 0023 | dw dmaengine: zero new descriptors with `memset32()` instead of `dma_pool_zalloc()` (dcbz on cache-inhibited coherent memory raised ~350 alignment exceptions per MiB of disk I/O); backport of 6.18 0005 |
 | 0024 | dw dmaengine: only the 7-word LLI stays in uncached coherent memory; descriptor software state (lists, txd, lengths) comes from 192 preallocated slots in cached RAM. IRQ-off time in ata_scsi_queuecmd halved |
+| 0025 | emac/MAL: `struct mal_instance` (NAPI, poll state) always in cached RAM; only the descriptor rings go to OCM. Also fixes `kfree()` of an OCM pointer on the probe error path |
+| 0026 | dw dmaengine: each of the 192 descriptor slots owns a preallocated coherent LLI (`lli[i]`), no `dma_pool_alloc/free` per LLI; dma_pool + kmem_cache remain as fallback |
+| 0027 | math64: `div_u64_rem()`/`div_u64()` `__always_inline`, so constant divisors become multiplies (no effect on the 4.19 binary, removes 11 out-of-line copies in 5.10) |
 
 ## Current package: p22 with perf, without counters
 
@@ -133,3 +136,23 @@ command issue, which builds the DW LLI chain) / `dwc_descriptor_complete`:
 DDR for this access pattern, so 0024 uses cached RAM (`DW_META_OCM` 0). Integrity: md5 of 1 GiB raw read
 (direct and buffered) and a 1.6 GB file copy after drop_caches match the reference taken on another kernel.
 Config: [config/.config.4.19.325-cip136-mbl-p25-wd-perf](config/.config.4.19.325-cip136-mbl-p25-wd-perf).
+
+## p26: p25 + 0025-0027 (2026-11-02)
+
+Same day, same disk temperature (66-67 C), 3 runs per kernel after >= 4 min uptime. iperf3 at a fixed
+600 Mbit/s with perf (cpu-clock 2000 Hz, 10 s); dd 1 GiB of sda5, self samples in `ata_scsi_queuecmd`.
+
+| Kernel | dd O_DIRECT | dd buffered | rx: CPU busy at 600 Mbit / `mal_poll` | tx: `mal_poll` |
+|---|---|---|---|---|
+| p25 | 466-475 | 587-617 | ~69.7 % / 675-712 | 274-312 |
+| **p26** | **431-453** | **537-569** | ~67.7 % / 699-788 | 289-322 |
+| p26r: MAL rings in coherent DDR (`MAL_RINGS_OCM` 0) | 450-471 | 541-556 | ~69.5 % / 851-964 | 428-455 |
+
+- 0026 takes another 6-8 % off the IRQ-off time of the SATA command issue.
+- 0025: no measurable change (within the iperf client noise), kept because the instance is CPU-only data.
+- Rings in uncached DDR instead of OCM cost ~20 % more in `mal_poll` (rx and tx), so the rings stay in OCM.
+- 0027 does not change the 4.19 binary (same text size): the TCP divisions per ACK here have variable divisors.
+
+Integrity (1 GiB raw read direct + buffered, 1.6 GB file copy) matches the reference, alignment faults 0.
+Config: [config/.config.4.19.325-cip136-mbl-p26-wd-perf](config/.config.4.19.325-cip136-mbl-p26-wd-perf).
+5.10 port of 0023-0027: [../5.10.271-cip78](../5.10.271-cip78/README.md).

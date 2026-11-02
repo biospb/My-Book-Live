@@ -1,0 +1,111 @@
+From c8add1cbaa630e197157e4cc0ee1e4f0667da7ce Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 07:31:45 +0300
+Subject: [PATCH 15/20] lib/iov_iter: APM821xx bounded pagecopy (port of 4.19
+ 0022)
+
+For CONFIG_APM821xx, memcpy_from_page() copies of >= 256 bytes with
+word-aligned, non-overlapping addresses use the bounded-prefetch
+__copy_tofrom_user loop on mapped kernel RAM. Short, unaligned or
+overlapping copies keep memcpy; an incomplete raw copy retries the rest
+with memcpy.
+---
+ lib/iov_iter.c | 43 ++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/lib/iov_iter.c b/lib/iov_iter.c
+index 269e85ea1bb2..04c52872f928 100644
+--- a/lib/iov_iter.c
++++ b/lib/iov_iter.c
+@@ -14,6 +14,37 @@
+ #include <linux/scatterlist.h>
+ #include <linux/instrumented.h>
+ 
++#ifdef CONFIG_APM821xx
++/*
++ * 4.19 patch 0022 port: the 44x memcpy loop has no source prefetch. Reuse the
++ * bounded prefetch loop of __copy_tofrom_user (it never touches lines past
++ * the end of the source) on mapped cacheable RAM. Keep memcpy for small,
++ * unaligned or overlapping ranges: the loop uses dcbz on the destination.
++ */
++static void iov_memcpy_from_page(char *to, struct page *page, size_t offset, size_t len)
++{
++	char *from = kmap_atomic(page);
++	unsigned long dst = (unsigned long)to;
++	unsigned long src = (unsigned long)(from + offset);
++
++	if (len >= 256 && !((src | dst) & 3) &&
++	    (dst < src ? src - dst >= len : dst - src >= len)) {
++		unsigned long left = __copy_tofrom_user(
++			(void __force __user *)to,
++			(const void __force __user *)(from + offset), len);
++
++		/* mapped kernel RAM should not fault; finish with memcpy if it does */
++		if (unlikely(left))
++			memcpy(to + len - left, from + offset + len - left, left);
++	} else {
++		memcpy(to, from + offset, len);
++	}
++	kunmap_atomic(from);
++}
++#else
++#define iov_memcpy_from_page memcpy_from_page
++#endif
++
+ #define PIPE_PARANOIA /* for now */
+ 
+ #define iterate_iovec(i, n, __v, __p, skip, STEP) {	\
+@@ -741,6 +772,8 @@ size_t _copy_mc_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
+ 
+ 	return bytes;
+ }
++
++
+ EXPORT_SYMBOL_GPL(_copy_mc_to_iter);
+ #endif /* CONFIG_ARCH_HAS_COPY_MC */
+ 
+@@ -755,7 +788,7 @@ size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+ 		might_fault();
+ 	iterate_and_advance(i, bytes, v,
+ 		copyin((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len),
+-		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
++		iov_memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
+ 				 v.bv_offset, v.bv_len),
+ 		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+ 	)
+@@ -781,7 +814,7 @@ bool _copy_from_iter_full(void *addr, size_t bytes, struct iov_iter *i)
+ 				      v.iov_base, v.iov_len))
+ 			return false;
+ 		0;}),
+-		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
++		iov_memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
+ 				 v.bv_offset, v.bv_len),
+ 		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+ 	)
+@@ -801,7 +834,7 @@ size_t _copy_from_iter_nocache(void *addr, size_t bytes, struct iov_iter *i)
+ 	iterate_and_advance(i, bytes, v,
+ 		__copy_from_user_inatomic_nocache((to += v.iov_len) - v.iov_len,
+ 					 v.iov_base, v.iov_len),
+-		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
++		iov_memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
+ 				 v.bv_offset, v.bv_len),
+ 		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+ 	)
+@@ -860,7 +893,7 @@ bool _copy_from_iter_full_nocache(void *addr, size_t bytes, struct iov_iter *i)
+ 					     v.iov_base, v.iov_len))
+ 			return false;
+ 		0;}),
+-		memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
++		iov_memcpy_from_page((to += v.bv_len) - v.bv_len, v.bv_page,
+ 				 v.bv_offset, v.bv_len),
+ 		memcpy((to += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+ 	)
+@@ -991,7 +1024,7 @@ size_t iov_iter_copy_from_user_atomic(struct page *page,
+ 	}
+ 	iterate_all_kinds(i, bytes, v,
+ 		copyin((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len),
+-		memcpy_from_page((p += v.bv_len) - v.bv_len, v.bv_page,
++		iov_memcpy_from_page((p += v.bv_len) - v.bv_len, v.bv_page,
+ 				 v.bv_offset, v.bv_len),
+ 		memcpy((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+ 	)

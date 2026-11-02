@@ -1,0 +1,62 @@
+From c5723f00eeb9548658e0dda1e59c44424c555dc5 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 06:30:47 +0300
+Subject: [PATCH 18/20] net: ibm: emac: APM821xx: keep the MAL instance in
+ cached RAM
+
+With descriptor-memory = "ocm" the whole struct mal_instance (NAPI
+struct, poll state, coalescing state) was put into the on-chip memory,
+which is mapped uncached. It is CPU-only data touched in every poll and
+interrupt. Allocate it with kzalloc; only the descriptor rings, which the
+MAL reads and writes, stay in OCM. This also fixes kfree() of an OCM
+pointer on the probe error path.
+
+MAL_RINGS_OCM=0 keeps the rings in coherent DDR as well (for testing).
+---
+ drivers/net/ethernet/ibm/emac/mal.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index 6f63547648a1..8a7435915955 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -30,6 +30,11 @@
+ #include <asm/dcr-regs.h>
+ #include <asm/ppc4xx_ocm.h>
+ 
++/* 1: rings in OCM when the device tree asks for it; 0: always coherent DDR */
++#ifndef MAL_RINGS_OCM
++#define MAL_RINGS_OCM	1
++#endif
++
+ static int mal_count;
+ #ifdef CONFIG_IBM_EMAC_INTR_COALESCE
+ static char *tx_coal_irqname[] = {"TX0 COAL", "TX1 COAL", "TX2 COAL", "TX3 COAL",};
+@@ -951,16 +956,19 @@ static int mal_probe(struct platform_device *ofdev) {
+ 	int num_phys_chans, coal_intr_index;
+ #endif
+ 
+-	str_prop = of_get_property(np, "descriptor-memory", NULL);
+-	if (str_prop && (!strcmp(str_prop,"ocm") || !strcmp(str_prop,"OCM"))) {
+-		phys_addr_t	bd_phys;
+-		printk(KERN_INFO "MAL: Allocating MAL instance on OCM\n");
+-		mal = ppc4xx_ocm_alloc(&bd_phys, sizeof(struct mal_instance), 4, PPC4XX_OCM_NON_CACHED, "mal_instance");
+-		memset(mal, 0, sizeof(struct mal_instance));
+-		mal->desc_memory = MAL_DESC_MEM_OCM;
+-	} else mal = kzalloc(sizeof(struct mal_instance), GFP_KERNEL);
++	/*
++	 * The instance (NAPI, poll state, counters) is CPU-only data: keep it
++	 * in cached RAM. OCM is uncached SRAM, so every access there costs a
++	 * bus cycle. Only the descriptor rings, which the MAL reads and
++	 * writes, may go to OCM ("descriptor-memory" = "ocm").
++	 */
++	mal = kzalloc(sizeof(struct mal_instance), GFP_KERNEL);
+ 	if (!mal)
+ 		return -ENOMEM;
++	str_prop = of_get_property(np, "descriptor-memory", NULL);
++	if (MAL_RINGS_OCM && str_prop &&
++	    (!strcmp(str_prop, "ocm") || !strcmp(str_prop, "OCM")))
++		mal->desc_memory = MAL_DESC_MEM_OCM;
+ 
+ 	mal->index = index;
+ 	mal->ofdev = ofdev;
