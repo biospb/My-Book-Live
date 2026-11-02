@@ -31,6 +31,19 @@ You will need to update `/etc/network/if-up.d/tuneperf` to use Jumbo packets or 
 * 4.9.149: comes in three configurations : optimized for space, optimized for performance which is ~400K larger and a version of the latter which includes IO accounting (allows to run `iotop`).  In practical use though there is not much performance difference...
 * 4.19.99: high performance kernel released with patches
 
+## Kernels 5.10 and 6.1 CIP (November 2026) ##
+The 4.19 series ported to the CIP SLTS 5.10 and 6.1 trees. Same archive layout
+and board DTB as p31, 16K pages, PERF_EVENTS on; install into the multiboot test
+slot first. Same SMB speed as p31, somewhat more CPU per packet.
+* __[linux-5.10.271-cip78-mbl-510r8.tgz](linux-5.10.271-cip78-mbl-510r8.tgz)__
+  (candidate): patches 0001–0023, see [../patches/5.10.271-cip78/README.md](../patches/5.10.271-cip78/README.md).
+  [Checksums](SHA256SUMS-510r8), [matching vmlinux](vmlinux-5.10.271-cip78-mbl-510r8.xz).
+  Fixed-placement SMB bench 79.0 / 101.8 MiB/s, 26 % free CPU during the read.
+* __[linux-6.1.189-cip61-mbl-61r3.tgz](linux-6.1.189-cip61-mbl-61r3.tgz)__:
+  patches 0001–0008, see [../patches/6.1.189-cip61/README.md](../patches/6.1.189-cip61/README.md).
+  [Checksums](SHA256SUMS-61r3), [vmlinux without DWARF](vmlinux-6.1.189-cip61-mbl-61r3.xz).
+  Fixed-placement SMB bench 79.2 / 101.6 MiB/s, 23 % free CPU during the read.
+
 ## Kernel 6.18.58 (October 2026, experimental) ##
 Port of Linux 6.18.58 to the APM82181, tested with the same honest methodology
 as the p22 binary. See [../patches/6.18.58/README.md](../patches/6.18.58/README.md).
@@ -63,14 +76,15 @@ See [../patches/7.3/README.md](../patches/7.3/README.md).
 
 ## Kernels for Debian sid (2026) ##
 Built with gcc 12 from the series in [../patches/4.19.325-cip136](../patches/4.19.325-cip136/README.md) and [../patches/4.19.325](../patches/4.19.325/README.md) (16K pages, like 4.19.99). Validated on a single-disk MBL with Debian sid + sysvinit, booted with `libata.force=noncq rng_core.default_quality=700`.
-* __[linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz)__ (latest): complete patches 0001–0022, including SATA 0020/0021 and bounded `memcpy_from_page` optimization. 16K pages, hang recovery and PERF_EVENTS are retained; copy-alignment counters are completely absent. Includes the exact tested board DTB (DMA-engine bindings, zero MAC address), config, System.map and two matching modules. This DTB differs from the older generic file. [Checksums](SHA256SUMS-p22-perf), [matching debug vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz), [build checks](../diagnostics/p22-perf/build-validation.json) and [runtime/SMB results](../../bench/README.md#p22-kernel-with-persistent-splice). Samba splice is a separate [userspace installation](../../debian/samba-splice/README.md).
+* __[linux-4.19.325-cip136-st20-mbl-p31-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p31-wd-perf.tgz)__ (latest, production since November 2026): complete patches 0001–0029. Over p22: no dcbz alignment traps in DW-DMA descriptor zeroing, descriptor state and MAL instance in cached RAM, preallocated LLIs, inline `div_u64`, a fix for an EMAC TX ring overflow (TX hang of ~2.5 min) and no NAPI re-poll per waiting RX packet. Same tested board DTB as p22, config, System.map and the matching modules. [Checksums](SHA256SUMS-p31-perf) and [matching vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p31-wd-perf.xz). Fixed-placement SMB bench: 81.0 / 101.2 MiB/s, 33 % free CPU during the read.
+* __[linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz](linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz)__: complete patches 0001–0022, including SATA 0020/0021 and bounded `memcpy_from_page` optimization. 16K pages, hang recovery and PERF_EVENTS are retained; copy-alignment counters are completely absent. Includes the exact tested board DTB (DMA-engine bindings, zero MAC address), config, System.map and two matching modules. This DTB differs from the older generic file. [Checksums](SHA256SUMS-p22-perf), [matching debug vmlinux](vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz), [build checks](../diagnostics/p22-perf/build-validation.json) and [runtime/SMB results](../../bench/README.md#p22-kernel-with-persistent-splice). Samba splice is a separate [userspace installation](../../debian/samba-splice/README.md).
 * __linux-4.19.325-cip136-st20-mbl-p21.tgz__: GRO and the `-wd` hang/soft-lockup protection below, plus SATA DMA fixes 0020/0021. The 16K-page patch-21 kernel was tested with SMB and local copy/hash checks. This package uses the matching NAS modules and the generic apollo3g device tree.
 * __linux-4.19.325-cip136-st20-mbl-wd.tgz__: the -gro kernel below with hang protection: a task blocked in D state for 180 s (`hung_task_panic`) or a soft lockup panics, and `panic=10` reboots, so the multiboot fallback also covers a boot that hangs before SSH.
 * __linux-4.19.325-cip136-st20-mbl-gro.tgz__: the cip136 kernel below plus patch 0019 (emac GRO), SMB write 61 -> 67 MiB/s.
 * __linux-4.19.325-cip136-st20-mbl.tgz__: CIP SLTS base with the audit fixes, SECCOMP, sock_diag, `/proc/config.gz`, gpio LEDs, POSIX ACLs, crypto4xx TRNG, statx mount-id backport.
 * __linux-4.19.325-mbl.tgz__: the same on the last kernel.org 4.19 release, without the CIP fixes and without patches 0017/0018 of the CIP series.
 
-Each archive contains `boot/uImage_<release>`, `boot/apollo3g.dtb`, `boot/config-<release>` and `lib/modules/<release>`. Older archives use the generic `../dts/apollo3g.dtb`; p22 carries the tested DMA-engine board DTB described above. Use `tar -xzf` from `/` and point u-boot at the uImage (see [../../uboot/boot_multi](../../uboot/boot_multi/README.md)). Keep the matching modules with the selected kernel. The separately compressed p22 vmlinux is for symbolization and is not required for boot.
+Each archive contains `boot/uImage_<release>`, `boot/apollo3g.dtb`, `boot/config-<release>` and `lib/modules/<release>`. Older archives use the generic `../dts/apollo3g.dtb`; p22 and newer carry the tested DMA-engine board DTB described above. Use `tar -xzf` from `/` and point u-boot at the uImage (see [../../uboot/boot_multi](../../uboot/boot_multi/README.md)). Keep the matching modules with the selected kernel. The separately compressed p22 vmlinux is for symbolization and is not required for boot.
 
 ## Installing pre-build kernels on Debian Jessie ##
 All posted kernels are compressed tar archives with [7zip](https://www.7-zip.org/) and contain:

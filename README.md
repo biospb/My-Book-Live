@@ -27,7 +27,7 @@ Changes made in this fork (September–November 2026):
 - SECCOMP, sock_diag (`ss`), `/proc/config.gz`, GPIO LEDs, POSIX ACLs, crypto4xx TRNG and statx mount-id support.
 - Tested with SMB transfers and local copy/hash checks on the single-disk MBL.
 
-The source series has since grown to 0029: **p31** (`4.19.325-cip136-st20-mbl-p31-wd-perf`) is the kernel running on the test MBL since November 2026. There is no precompiled p31 package yet; build it from [kernel/patches/4.19.325-cip136](kernel/patches/4.19.325-cip136/README.md).
+The source series has since grown to 0029: **p31** (`4.19.325-cip136-st20-mbl-p31-wd-perf`) is the kernel running on the test MBL since November 2026. Package: [`linux-4.19.325-cip136-st20-mbl-p31-wd-perf.tgz`](kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p31-wd-perf.tgz) ([checksums](kernel/precompiled/SHA256SUMS-p31-perf), [debug vmlinux](kernel/precompiled/vmlinux-4.19.325-cip136-st20-mbl-p31-wd-perf.xz)); the 5.10 (510r8) and 6.1 (61r3) packages are listed in [kernel/precompiled](kernel/precompiled/README.md).
 
 Package: [`linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz`](kernel/precompiled/linux-4.19.325-cip136-st20-mbl-p22-wd-perf.tgz), containing the exact tested uImage, board device tree, config, System.map and matching modules. [Checksums](kernel/precompiled/SHA256SUMS-p22-perf) and a [separate matching debug vmlinux](kernel/precompiled/vmlinux-4.19.325-cip136-st20-mbl-p22-wd-perf.xz) are provided for perf. The [Samba shim](debian/samba-splice/README.md) is installed separately; the kernel archive does not enable it by itself. See the [CIP patch series](kernel/patches/4.19.325-cip136/README.md) and [patch audit](kernel/patches/4.19/audit).
 
@@ -142,7 +142,7 @@ full per-variant measurement reports, and a precompiled p40 package
 | [kernel/patches/6.1.189-cip61](kernel/patches/6.1.189-cip61/README.md) | CIP 6.1 port (61r3): 8 patches, config, build script, measurements |
 | [kernel/patches/6.18.58](kernel/patches/6.18.58/README.md) | Linux 6.18.58 port: numbered patch series, config, audit reports and trial tooling |
 | [kernel/patches/7.3](kernel/patches/7.3/README.md) | Linux 7.3 port (73r1-slim): series rebased on mainline v7.3, slim config, build script |
-| [kernel/precompiled](kernel/precompiled) | Precompiled kernel packages and matching modules (p22 and 6.18.58 p40) |
+| [kernel/precompiled](kernel/precompiled) | Precompiled kernel packages and matching modules (4.19 p31/p22, 5.10 510r8, 6.1 61r3, 6.18.58 p40, 7.3 73r1) |
 | [samba](samba) | Samba configuration for sid |
 | [uboot/boot_multi](uboot/boot_multi/README.md) | Multiboot, rescue fallback and boot confirmation |
 | [bench](bench) | SMB and on-device benchmark scripts and recorded results |
