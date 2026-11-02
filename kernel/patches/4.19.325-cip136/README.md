@@ -17,6 +17,7 @@ About 380 CIP commits touch code built with this config (nfsd, ext4/jbd2, net, m
 | 0021 | sata_dwc: terminate the DMA channel on hardreset, so one DMA timeout cannot wedge all later commands |
 | 0022 | lib/iov_iter: bounded PPC pagecopy for aligned, nonoverlapping APM821xx page-to-kernel copies; global memcpy unchanged |
 | 0023 | dw dmaengine: zero new descriptors with `memset32()` instead of `dma_pool_zalloc()` (dcbz on cache-inhibited coherent memory raised ~350 alignment exceptions per MiB of disk I/O); backport of 6.18 0005 |
+| 0024 | dw dmaengine: only the 7-word LLI stays in uncached coherent memory; descriptor software state (lists, txd, lengths) comes from 192 preallocated slots in cached RAM. IRQ-off time in ata_scsi_queuecmd halved |
 
 ## Current package: p22 with perf, without counters
 
@@ -115,3 +116,20 @@ MTD_PHYSMAP_OF + JEDECPROBE (u-boot env), PERF_EVENTS. vmlinux 7.62 -> 6.22 MB, 
 Quick bench (iperf3, steady runs): NAS rx 941-952 Mbit idle 18-19 %, NAS tx 982-985 idle 36-48 %;
 alignment faults 0. `-Os` (p24s, vmlinux text -21 %) costs CPU: rx idle 14.8 % (softirq 27 vs 21 %),
 tx idle 28-33 % — so -O2 stays.
+
+## p25: p24 + 0024 (2026-11-02)
+
+1 GiB dd read of sda5, perf cpu-clock 2000 Hz, self samples in `ata_scsi_queuecmd` (= IRQ-off time of the
+command issue, which builds the DW LLI chain) / `dwc_descriptor_complete`:
+
+| Kernel | O_DIRECT | buffered |
+|---|---|---|
+| p22 (no 0023) | 943 / 148 | 1038 / 172 |
+| 5.10 510r4 (with 0023) | 724 / 161 | 831 / 173 |
+| p25o: state in OCM (uncached SRAM) | 778 / 105 | 859 / 119 |
+| **p25: state in cached RAM** | **477 / 37** | **620 / 94** |
+
+~2-2.5 % CPU less at 120 MB/s and about half the IRQ-off time per command. OCM is barely faster than uncached
+DDR for this access pattern, so 0024 uses cached RAM (`DW_META_OCM` 0). Integrity: md5 of 1 GiB raw read
+(direct and buffered) and a 1.6 GB file copy after drop_caches match the reference taken on another kernel.
+Config: [config/.config.4.19.325-cip136-mbl-p25-wd-perf](config/.config.4.19.325-cip136-mbl-p25-wd-perf).

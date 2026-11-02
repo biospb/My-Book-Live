@@ -1,0 +1,263 @@
+From 4103520aa4bfc6e39d8667df6a0fe71771f469d5 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 06:00:42 +0300
+Subject: [PATCH] dmaengine: dw: APM821xx: keep descriptor software state out
+ of uncached DDR
+
+Coherent memory is cache-inhibited on APM821xx. dw_desc kept the list
+heads, the async tx descriptor and the lengths next to the hardware LLI
+in the dma_pool, so every descriptor cost ~35 uncached stores plus
+uncached loads for list handling, all inside ata_scsi_translate with
+interrupts off (~4-5 % CPU at 120 MB/s disk reads, ~3 us per LLI).
+
+Only the 7-word LLI stays in the coherent pool now. The software part is
+taken from a free list of 192 preallocated slots (cached RAM, or OCM with
+DW_META_OCM=1), with a kmem_cache fallback.
+---
+ drivers/dma/dw/core.c | 128 +++++++++++++++++++++++++++++++++++++++---
+ drivers/dma/dw/regs.h |  24 ++++++++
+ 2 files changed, 144 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/dma/dw/core.c b/drivers/dma/dw/core.c
+index e53cf86957f7..8b5f554c1fd2 100644
+--- a/drivers/dma/dw/core.c
++++ b/drivers/dma/dw/core.c
+@@ -27,6 +27,88 @@
+ #include "../dmaengine.h"
+ #include "internal.h"
+ 
++#ifdef CONFIG_APM821xx
++#include <asm/ppc4xx_ocm.h>
++
++/*
++ * Software descriptor slots. One SATA command uses up to ~160 LLIs
++ * (1280 KiB in 8 KiB blocks) and the port runs at queue depth 1, so
++ * 192 slots normally cover all descriptors in flight; the kmem_cache
++ * takes over if they run out. DW_META_OCM=1 places the slots in the
++ * on-chip memory (uncached SRAM), 0 in ordinary cached RAM.
++ */
++#ifndef DW_META_OCM
++#define DW_META_OCM	0
++#endif
++#define DW_META_SLOTS	192
++
++static struct dw_desc *dw_meta_alloc(struct dw_dma *dw)
++{
++	unsigned long flags;
++	void *d;
++
++	spin_lock_irqsave(&dw->meta_lock, flags);
++	d = dw->meta_free;
++	if (d)
++		dw->meta_free = *(void **)d;
++	spin_unlock_irqrestore(&dw->meta_lock, flags);
++	if (!d)
++		d = kmem_cache_alloc(dw->meta_cache, GFP_ATOMIC);
++	return d;
++}
++
++static void dw_meta_free(struct dw_dma *dw, struct dw_desc *desc)
++{
++	unsigned long flags;
++	void *d = desc;
++
++	if (d >= dw->meta_base && d < dw->meta_end) {
++		spin_lock_irqsave(&dw->meta_lock, flags);
++		*(void **)d = dw->meta_free;
++		dw->meta_free = d;
++		spin_unlock_irqrestore(&dw->meta_lock, flags);
++	} else {
++		kmem_cache_free(dw->meta_cache, d);
++	}
++}
++
++static int dw_meta_init(struct dw_dma *dw, struct device *dev)
++{
++	size_t sz = ALIGN(sizeof(struct dw_desc), sizeof(u32));
++	void *base = NULL;
++	phys_addr_t phys;
++	int i;
++
++	spin_lock_init(&dw->meta_lock);
++	dw->meta_cache = kmem_cache_create("dw_desc_meta", sz, 0, 0, NULL);
++	if (!dw->meta_cache)
++		return -ENOMEM;
++
++	dw->meta_ocm = false;
++	if (DW_META_OCM) {
++		base = ppc4xx_ocm_alloc(&phys, sz * DW_META_SLOTS, 4,
++					PPC4XX_OCM_NON_CACHED, "dw_desc_meta");
++		dw->meta_ocm = base != NULL;
++	}
++	if (!base)
++		base = kmalloc(sz * DW_META_SLOTS, GFP_KERNEL);
++
++	dw->meta_free = NULL;
++	dw->meta_base = base;
++	dw->meta_end = base ? base + sz * DW_META_SLOTS : NULL;
++	for (i = DW_META_SLOTS - 1; base && i >= 0; i--) {
++		void *d = base + i * sz;
++
++		*(void **)d = dw->meta_free;
++		dw->meta_free = d;
++	}
++	dev_info(dev, "descriptor state: %d slots of %zu bytes in %s\n",
++		 base ? DW_META_SLOTS : 0, sz,
++		 dw->meta_ocm ? "OCM" : base ? "cached RAM" : "kmem_cache only");
++	return 0;
++}
++#endif
++
+ /*
+  * This supports the Synopsys "DesignWare AHB Central DMA Controller",
+  * (DW_ahb_dmac) which is used with various AMBA 2.0 systems (not all
+@@ -108,17 +190,27 @@ static struct dw_desc *dwc_desc_get(struct dw_dma_chan *dwc)
+ 	dma_addr_t phys;
+ 
+ #ifdef CONFIG_APM821xx
++	struct dw_lli *lli;
++
+ 	/*
+-	 * Coherent memory is cache-inhibited on APM821xx. PPC32 memset()
+-	 * uses dcbz for zero cache lines, which traps on this mapping.
+-	 * Keep the whole descriptor zeroed, including software state.
+-	 * The pool aligns descriptors to 4 bytes; memset32 counts words.
++	 * Coherent memory is cache-inhibited on APM821xx, and so is OCM.
++	 * PPC32 memset() uses dcbz for whole cache lines, which traps on
++	 * such mappings: zero with word stores. Only the 7-word LLI is in
++	 * the coherent pool; the software state is a separate slot.
+ 	 */
+ 	BUILD_BUG_ON(sizeof(*desc) % sizeof(u32));
+-	desc = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, &phys);
+-	if (unlikely(!desc))
++	BUILD_BUG_ON(sizeof(*lli) % sizeof(u32));
++	lli = dma_pool_alloc(dw->desc_pool, GFP_ATOMIC, &phys);
++	if (unlikely(!lli))
++		return NULL;
++	desc = dw_meta_alloc(dw);
++	if (unlikely(!desc)) {
++		dma_pool_free(dw->desc_pool, lli, phys);
+ 		return NULL;
++	}
++	memset32((u32 *)lli, 0, sizeof(*lli) / sizeof(u32));
+ 	memset32((u32 *)desc, 0, sizeof(*desc) / sizeof(u32));
++	desc->lli = lli;
+ #else
+ 	desc = dma_pool_zalloc(dw->desc_pool, GFP_ATOMIC, &phys);
+ 	if (unlikely(!desc))
+@@ -144,11 +236,21 @@ static void dwc_desc_put(struct dw_dma_chan *dwc, struct dw_desc *desc)
+ 
+ 	list_for_each_entry_safe(child, _next, &desc->tx_list, desc_node) {
+ 		list_del(&child->desc_node);
++#ifdef CONFIG_APM821xx
++		dma_pool_free(dw->desc_pool, child->lli, child->txd.phys);
++		dw_meta_free(dw, child);
++#else
+ 		dma_pool_free(dw->desc_pool, child, child->txd.phys);
++#endif
+ 		dwc->descs_allocated--;
+ 	}
+ 
++#ifdef CONFIG_APM821xx
++	dma_pool_free(dw->desc_pool, desc->lli, desc->txd.phys);
++	dw_meta_free(dw, desc);
++#else
+ 	dma_pool_free(dw->desc_pool, desc, desc->txd.phys);
++#endif
+ 	dwc->descs_allocated--;
+ }
+ 
+@@ -695,7 +797,7 @@ dwc_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dest, dma_addr_t src,
+ 		/* Trigger interrupt after last block */
+ 		lli_set(prev, ctllo, DWC_CTLL_INT_EN);
+ 
+-	prev->lli.llp = 0;
++	lli_write(prev, llp, 0);
+ 	lli_clear(prev, ctllo, DWC_CTLL_LLP_D_EN | DWC_CTLL_LLP_S_EN);
+ 	first->txd.flags = flags;
+ 	first->total_len = len;
+@@ -845,7 +947,7 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
+ 	if (flags & DMA_PREP_INTERRUPT) 	/* Trigger interrupt after last block */
+ 		lli_set(prev, ctllo, DWC_CTLL_INT_EN);
+ 
+-	prev->lli.llp = 0;
++	lli_write(prev, llp, 0);
+ 	lli_clear(prev, ctllo, DWC_CTLL_LLP_D_EN | DWC_CTLL_LLP_S_EN);
+ 	first->total_len = total_len;
+ 
+@@ -1265,13 +1367,23 @@ int dw_dma_probe(struct dw_dma_chip *chip)
+ 		snprintf(dw->name, sizeof(dw->name), "dw:dmac%d", chip->id);
+ 
+ 	/* Create a pool of consistent memory blocks for hardware descriptors */
++#ifdef CONFIG_APM821xx
++	dw->desc_pool = dmam_pool_create(dw->name, chip->dev,
++					 sizeof(struct dw_lli), 4, 0);
++#else
+ 	dw->desc_pool = dmam_pool_create(dw->name, chip->dev,
+ 					 sizeof(struct dw_desc), 4, 0);
++#endif
+ 	if (!dw->desc_pool) {
+ 		dev_err(chip->dev, "No memory for descriptors dma pool\n");
+ 		err = -ENOMEM;
+ 		goto err_pdata;
+ 	}
++#ifdef CONFIG_APM821xx
++	err = dw_meta_init(dw, chip->dev);
++	if (err)
++		goto err_pdata;
++#endif
+ 
+ 	tasklet_init(&dw->tasklet, dw_dma_tasklet, (unsigned long)dw);
+ 
+diff --git a/drivers/dma/dw/regs.h b/drivers/dma/dw/regs.h
+index 646c9c960c07..3cd4cce40426 100644
+--- a/drivers/dma/dw/regs.h
++++ b/drivers/dma/dw/regs.h
+@@ -314,6 +314,16 @@ struct dw_dma {
+ 
+ 	/* platform data */
+ 	struct dw_dma_platform_data	*pdata;
++
++#ifdef CONFIG_APM821xx
++	/* software descriptor state outside the uncached coherent pool */
++	spinlock_t		meta_lock;
++	void			*meta_free;	/* free list of preallocated slots */
++	void			*meta_base;
++	void			*meta_end;
++	bool			meta_ocm;
++	struct kmem_cache	*meta_cache;	/* fallback when slots run out */
++#endif
+ };
+ 
+ static inline struct dw_dma_regs __iomem *__dw_regs(struct dw_dma *dw)
+@@ -358,6 +368,19 @@ struct dw_lli {
+ };
+ 
+ struct dw_desc {
++#ifdef CONFIG_APM821xx
++	/*
++	 * APM821xx: coherent memory is cache-inhibited DDR. Only the LLI the
++	 * hardware reads lives in the dma_pool; this software part is kept in
++	 * cached RAM or OCM, so list and txd updates avoid uncached DDR.
++	 */
++	struct dw_lli			*lli;
++
++#define lli_set(d, reg, v)		((d)->lli->reg |= cpu_to_le32(v))
++#define lli_clear(d, reg, v)		((d)->lli->reg &= ~cpu_to_le32(v))
++#define lli_read(d, reg)		le32_to_cpu((d)->lli->reg)
++#define lli_write(d, reg, v)		((d)->lli->reg = cpu_to_le32(v))
++#else
+ 	/* FIRST values the hardware uses */
+ 	struct dw_lli			lli;
+ 
+@@ -365,6 +388,7 @@ struct dw_desc {
+ #define lli_clear(d, reg, v)		((d)->lli.reg &= ~cpu_to_le32(v))
+ #define lli_read(d, reg)		le32_to_cpu((d)->lli.reg)
+ #define lli_write(d, reg, v)		((d)->lli.reg = cpu_to_le32(v))
++#endif
+ 
+ 	/* THEN values for driver housekeeping */
+ 	struct list_head		desc_node;
+-- 
+2.43.0
+
