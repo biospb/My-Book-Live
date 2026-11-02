@@ -121,5 +121,3 @@ blk-mq completion with interrupts off (`dma_dwc_xfer_done` 77 -> 442, attributio
 route hint (`ip_list_rcv`, `ip_route_use_hint`, `fib_validate_source`, ~+500), softirq entry (+318),
 slab and page cache changes. `gro_normal_batch=1` and a locked qdisc (`pfifo`) changed nothing.
 
-Side finding: the old `/etc/cron.d/keep-rpcd` job (python3 + smbclient every 2 minutes) took ~2 s of full CPU and
-caused the "one slow run of four" (~77 MiB/s) seen in every SMB series. It is disabled now.
