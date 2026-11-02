@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Mon, 2 Nov 2026 20:44:56 +0300
+Subject: [PATCH 3/8] crypto: crypto4xx: match the ppc4xx-trng node of the MBL
+ dtb
+
+Port of 5.10 series 0010.
+---
+ drivers/crypto/amcc/crypto4xx_trng.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/crypto/amcc/crypto4xx_trng.c b/drivers/crypto/amcc/crypto4xx_trng.c
+index f10a87e541ed..faaefed16514 100644
+--- a/drivers/crypto/amcc/crypto4xx_trng.c
++++ b/drivers/crypto/amcc/crypto4xx_trng.c
+@@ -63,6 +63,7 @@ static void ppc4xx_trng_enable(struct crypto4xx_device *dev, bool enable)
+ 
+ static const struct of_device_id ppc4xx_trng_match[] = {
+ 	{ .compatible = "ppc4xx-rng", },
++	{ .compatible = "ppc4xx-trng", },	/* apollo3g.dtb (My Book Live) */
+ 	{ .compatible = "amcc,ppc460ex-rng", },
+ 	{ .compatible = "amcc,ppc440epx-rng", },
+ 	{},
+-- 
+2.43.0
+

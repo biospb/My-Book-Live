@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MBL build <mbl@localhost>
+Date: Mon, 2 Nov 2026 20:44:57 +0300
+Subject: [PATCH 6/8] lib/iov_iter: APM821xx bounded copy for kernel-mapped
+ sources
+
+The 44x memcpy loop has no source prefetch. Use the bounded prefetch loop
+of __copy_tofrom_user (it never touches lines past the end of the source)
+in the kernel-address step of _copy_from_iter(), _copy_from_iter_nocache()
+and copy_page_from_iter_atomic(). In 6.1 that step covers bvec, kvec and
+xarray iterators.
+
+Port of 5.10 series 0015.
+---
+ lib/iov_iter.c | 34 +++++++++++++++++++++++++++++++---
+ 1 file changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/lib/iov_iter.c b/lib/iov_iter.c
+index c3ca28ca68a6..e72f2b71987e 100644
+--- a/lib/iov_iter.c
++++ b/lib/iov_iter.c
+@@ -14,6 +14,34 @@
+ #include <linux/scatterlist.h>
+ #include <linux/instrumented.h>
+ 
++#ifdef CONFIG_APM821xx
++/*
++ * 4.19 patch 0022 port: the 44x memcpy loop has no source prefetch. Reuse the
++ * bounded prefetch loop of __copy_tofrom_user (it never touches lines past
++ * the end of the source) for kernel-mapped sources. Keep memcpy for small,
++ * unaligned or overlapping ranges: the loop uses dcbz on the destination.
++ */
++static __always_inline void iov_memcpy(void *to, const void *from, size_t len)
++{
++	unsigned long dst = (unsigned long)to;
++	unsigned long src = (unsigned long)from;
++
++	if (len >= 256 && !((src | dst) & 3) &&
++	    (dst < src ? src - dst >= len : dst - src >= len)) {
++		unsigned long left = __copy_tofrom_user((void __force __user *)to,
++					(const void __force __user *)from, len);
++
++		/* mapped kernel RAM should not fault; finish with memcpy if it does */
++		if (unlikely(left))
++			memcpy(to + len - left, from + len - left, left);
++	} else {
++		memcpy(to, from, len);
++	}
++}
++#else
++#define iov_memcpy memcpy
++#endif
++
+ #define PIPE_PARANOIA /* for now */
+ 
+ /* covers ubuf and kbuf alike */
+@@ -630,7 +658,7 @@ size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+ 		might_fault();
+ 	iterate_and_advance(i, bytes, base, len, off,
+ 		copyin(addr + off, base, len),
+-		memcpy(addr + off, base, len)
++		iov_memcpy(addr + off, base, len)
+ 	)
+ 
+ 	return bytes;
+@@ -645,7 +673,7 @@ size_t _copy_from_iter_nocache(void *addr, size_t bytes, struct iov_iter *i)
+ 	}
+ 	iterate_and_advance(i, bytes, base, len, off,
+ 		__copy_from_user_inatomic_nocache(addr + off, base, len),
+-		memcpy(addr + off, base, len)
++		iov_memcpy(addr + off, base, len)
+ 	)
+ 
+ 	return bytes;
+@@ -819,7 +847,7 @@ size_t copy_page_from_iter_atomic(struct page *page, unsigned offset, size_t byt
+ 	}
+ 	iterate_and_advance(i, bytes, base, len, off,
+ 		copyin(p + off, base, len),
+-		memcpy(p + off, base, len)
++		iov_memcpy(p + off, base, len)
+ 	)
+ 	kunmap_atomic(kaddr);
+ 	return bytes;
+-- 
+2.43.0
+
