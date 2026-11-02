@@ -3,7 +3,8 @@
 #   mbl-boot                    show the current selection
 #   mbl-boot debian|owrt|test   select for the next boot (test = kernel in /boot/debian-test)
 #   mbl-boot debian now         select and reboot
-#   mbl-boot confirm-ssh [sec]  from rc.local: once SSH answers on localhost mark the boot as
+#   mbl-boot confirm-ssh [sec]  from rc.local: once SSH answers on localhost and eth0 exists
+#                               (a kernel without a working network driver must not count) mark the boot as
 #                               successful (boot_count=0); if it does not answer in time, reboot,
 #                               so that boot.scr falls back to the other system after two tries;
 #                               while /etc/mbl-boot.noconfirm exists boot_count is never reset
@@ -51,9 +52,20 @@ case "$1" in
 	ok) mark_ok; exit $? ;;
 	confirm-ssh)
 		left=${2:-120}
-		until ssh_banner; do
+		# Local SSH alone is not enough: a kernel whose network driver failed to
+		# probe still answers on 127.0.0.1 but is unreachable. Link state is not
+		# required (an unplugged cable must not make the systems take turns).
+		# A test kernel (bootsel=2) must also reach the default gateway: eth0 can
+		# exist with a driver that passes no traffic.
+		net_ok() {
+			[ -e /sys/class/net/eth0 ] || return 1
+			[ "$(fw_printenv -n bootsel 2>/dev/null)" = 2 ] || return 0
+			gw=$(ip route 2>/dev/null | awk '$1 == "default" {print $3; exit}')
+			[ -n "$gw" ] && ping -c 1 -W 2 "$gw" >/dev/null 2>&1
+		}
+		until net_ok && ssh_banner; do
 			if [ "$left" -le 0 ]; then
-				log "no SSH banner after ${2:-120}s, rebooting (boot_count=$(fw_printenv -n boot_count 2>/dev/null))"
+				log "no eth0 or no SSH banner after ${2:-120}s, rebooting (boot_count=$(fw_printenv -n boot_count 2>/dev/null))"
 				sync
 				reboot
 				exit 1
