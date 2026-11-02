@@ -47,7 +47,7 @@ iperf3 NAS tx at a fixed 600 Mbit/s (10 s):
 
 ## 0021: TX ring overflow (SMB read hang), 2026-11-02
 
-510r5 under the fixed-placement SMB bench (`diagnostics/fixed-placement-bench.ps1`) hung twice in two boots,
+510r5 under the fixed-placement SMB bench ([bench/fixed-placement-bench.ps1](../../../bench/fixed-placement-bench.ps1)) hung twice in two boots,
 both times in the second read run: `mal0: TX descriptor error (TXDEIR = 0x80000000)`, then no TX for ~2.5 min
 until `NETDEV WATCHDOG ... transmit queue 0 timed out` reset the EMAC. The NAS did not reboot.
 
