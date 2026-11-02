@@ -9,7 +9,7 @@ The versioned v2 library is enabled in the NAS's SysV smbd startup. The current 
 The smbd start command in `/etc/init.d/smbd` adds `--startas /usr/local/libexec/smbd-splice`, while retaining `--exec /usr/sbin/smbd` and PIDFILE so stop/status still identify the real daemon. The [wrapper](smbd-splice) runs:
 
 ```sh
-exec env LD_PRELOAD=/usr/local/lib/samba-splice-1m-v2.so /usr/sbin/smbd "$@"
+exec env LD_PRELOAD=/usr/local/lib/samba-splice-1m-v3.so /usr/sbin/smbd "$@"
 ```
 
 Only this service startup supplies the preload; smbd children inherit it. Other SysV services and `/etc/ld.so.preload` are unchanged. 
@@ -24,6 +24,16 @@ env -u LD_PRELOAD /etc/init.d/smbd restart
 ```
 
 The [rollback](rollback-persistent.py) checks both script hashes and refuses to overwrite a script modified since installation. It leaves the library and wrapper available for diagnosis; the restored startup does not use them. After a Samba package update, check that the local `--startas` change remains in place.
+
+## v3 changes (production since 2 November 2026)
+
+- Pipe → file writes cover only whole 16K-aligned file blocks; the unaligned tail stays in the pipe until more socket data arrives or the request ends. With v2 every write ended wherever the socket data ended, so overwriting an existing, uncached file made ext4 read each partially written block first (in-place SMB overwrite ~34 MiB/s).
+- While a tail is held, the socket is set blocking for the rest of the call (smbd would do the same on its EAGAIN retry) and restored on return. Socket → pipe uses `SPLICE_F_NONBLOCK`, which applies to the pipe only: if the tail's RX fragments take every pipe slot, EAGAIN makes the shim write the tail unaligned instead of waiting for itself forever.
+- Input errors and EOF write the held tail before returning, so the retained pipe is always empty between calls.
+
+Fixed-placement bench on p22 (MiB/s, medians of runs 2–4): in-place overwrite v2 31–36 → v3 46–80 with no disk reads during writes (the spread follows disk temperature/journal waits, not the shim); zero-ranged write 72.6 → 74.5; reads unchanged. All seven regression cases and the reuse test pass on x86 and on the NAS, including a one-slot pipe build. [sim-overwrite.c](sim-overwrite.c) models smbd's recvfile loop over paced TCP and counts device reads. A 256 MiB SMB write plus in-place overwrite matched SHA256.
+
+Library: `/usr/local/lib/samba-splice-1m-v3.so`, SHA256 `9804508f6675f370d3e5a0f75bc9a656cecd50f54e33e2c055034be2eea06527`. The v2 library stays installed; the previous wrapper is saved as `/root/mbl-splice-persistent-20261026/smbd-splice.v2`.
 
 ## v2 changes
 
