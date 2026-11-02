@@ -176,3 +176,15 @@ On 4.19 it was latent: the ring never got close to full (`tx_undo` 0 after 4 SMB
 
 p28 = p26 + 0028 (p27 not included). SMB fixed-placement bench, 4 runs, disk 66-67 C: write median 77.5,
 read 99.7 MiB/s (p26: 78.2 / 99.8 over 8 runs, p22: 74.4 / 99.6). Alignment faults 0, no MAL errors.
+
+### Tried after p28, not in the series: BQL and xmit_more
+
+- p29 = p28 + BQL in the EMAC driver (`netdev_sent_queue()` before the TMR0 kick, `netdev_completed_queue()`
+  in poll_tx, `netdev_reset_queue()` on ring clean / open). The limit settles at 130-195 KB.
+- p30 = p29 + one TMR0 kick per `xmit_more` batch (always kicked when the queue is stopped).
+- SMB (4 runs, medians write/read): p28 82.3/95.4, p29 78.1/99.8, p30 79.7/100.2 — within the run-to-run noise.
+  iperf at 600 Mbit: CPU idle and `mal_poll`/`tcp_ack`/`__dma_sync` samples unchanged.
+- Ping under a full NAS TX load (iperf3 -R, 890-913 Mbit): 2.1 ms average with and without BQL. TCP small
+  queues already keep the in-flight data per socket at ~256 KB, so BQL has nothing to cut; the qdisc never
+  builds a backlog (requeues 0), so `xmit_more` is rarely set.
+- No errors, tx_undo 0. Not adopted (no measurable gain); the change is small if it is needed later.

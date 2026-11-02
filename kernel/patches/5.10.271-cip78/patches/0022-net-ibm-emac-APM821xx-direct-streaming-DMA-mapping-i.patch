@@ -1,0 +1,148 @@
+From 81a80fb9a56b92ac3c186b48b704e4bde311e610 Mon Sep 17 00:00:00 2001
+From: MBL-build <mbl@localhost>
+Date: Mon, 2 Nov 2026 13:40:19 +0300
+Subject: [PATCH] net: ibm: emac: APM821xx: direct streaming DMA mapping in the
+ packet paths
+
+On 5.10 dma_map_single() / skb_frag_dma_map() go through the out-of-line
+dma_map_page_attrs() dispatch before reaching the cache sync. EMAC/MAL on
+APM821xx is a platform device without IOMMU or DMA offset, so a streaming
+mapping is arch_sync_dma_for_device() plus the physical address.
+
+Use that in the RX refill/recycle and the TX head/fragment paths.
+emac_probe() maps a test buffer once and keeps the DMA API if its address
+differs from virt_to_phys(). The driver never unmaps on this platform, as
+before.
+
+perf at a fixed 600 Mbit/s: dma_map_page_attrs (~130 samples rx, ~85 tx of
+20000) is gone; part of it moves to __dma_sync. Integrity check OK.
+---
+ drivers/net/ethernet/ibm/emac/core.c | 24 ++++++++++++++++++++----
+ drivers/net/ethernet/ibm/emac/core.h | 23 +++++++++++++++++++++++
+ drivers/net/ethernet/ibm/emac/mal.c  |  4 ++--
+ 3 files changed, 45 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/ibm/emac/core.c b/drivers/net/ethernet/ibm/emac/core.c
+index 5a90a9a0ce4f..c77aa265ea96 100644
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -1306,7 +1306,7 @@ static __always_inline int _emac_start_xmit(struct sk_buff *skb, register struct
+ 	if (unlikely(slot == NUM_TX_BUFF - 1)) ctrl |= MAL_TX_CTRL_WRAP;  // set WRAP on last slot
+ 	DBG2(dev, "xmit(%u) %d\n" NL, len, slot);
+  	dev->tx_skb[slot] = skb;
+-	desc->data_ptr = dma_map_single(dev->ofdev_dev, skb->data, len, DMA_TO_DEVICE);
++	desc->data_ptr = emac_map_single(dev->ofdev_dev, skb->data, len, DMA_TO_DEVICE);
+     desc->data_len = (u16) len;
+ 	wmb();
+ 	desc->ctrl = ctrl;
+@@ -1388,7 +1388,7 @@ static netdev_tx_t emac_start_xmit_sg(struct sk_buff *skb, struct net_device *nd
+ 	dev->tx_skb[slot] = NULL;
+ 	chunk = (likely(len <= MAL_MAX_TX_SIZE)) ? len : MAL_MAX_TX_SIZE;
+ 	dev->tx_desc[slot].data_ptr = pd =
+-	    dma_map_single(dev->ofdev_dev, skb->data, SKB_DATA_ALIGN(len), DMA_TO_DEVICE);
++	    emac_map_single(dev->ofdev_dev, skb->data, SKB_DATA_ALIGN(len), DMA_TO_DEVICE);
+ 	dev->tx_desc[slot].data_len = (u16) chunk;
+ 	len -= chunk;
+ 	if (unlikely(len)) slot = emac_xmit_split(dev, slot, pd + chunk, len, !nr_frags, ctrl);
+@@ -1398,7 +1398,7 @@ static netdev_tx_t emac_start_xmit_sg(struct sk_buff *skb, struct net_device *nd
+ 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+ 		len = skb_frag_size(frag);
+ 
+-		pd = skb_frag_dma_map(dev->ofdev_dev, frag, 0, len, DMA_TO_DEVICE);
++		pd = emac_map_frag(dev->ofdev_dev, frag, len, DMA_TO_DEVICE);
+ 		slot = emac_xmit_split(dev, slot, pd, len, i == nr_frags - 1, ctrl);
+ 	}
+ 
+@@ -1513,7 +1513,7 @@ static __always_inline void emac_recycle_rx_skb(struct emac_instance *dev, int s
+ 
+ 	DBG2(dev, "recycle %d %d" NL, slot, len);
+ 	if (likely(len))
+-		dma_map_single(dev->ofdev_dev, skbdata - NET_IP_ALIGN, SKB_DATA_ALIGN(len + NET_IP_ALIGN), DMA_FROM_DEVICE);
++		emac_map_single(dev->ofdev_dev, skbdata - NET_IP_ALIGN, SKB_DATA_ALIGN(len + NET_IP_ALIGN), DMA_FROM_DEVICE);
+ 	dev->rx_desc[slot].data_len = 0;
+ 	wmb();
+ 	dev->rx_desc[slot].ctrl = MAL_RX_CTRL_EMPTY| MAL_RX_CTRL_INTR| (slot == (NUM_RX_BUFF-1) ? MAL_RX_CTRL_WRAP : 0);
+@@ -2905,6 +2905,20 @@ struct net_device *alloc_netdev_mqs_ocm(void *addr, int sizeof_priv, const char
+ 				    unsigned int txqs, unsigned int rxqs);
+ #endif
+ 
++bool emac_direct_dma __read_mostly;
++
++/* Use the direct streaming mapping (core.h) only if the DMA API agrees with it */
++static void emac_check_direct_dma(struct device *d) {
++	void *buf = kmalloc(L1_CACHE_BYTES, GFP_KERNEL);
++	dma_addr_t a;
++
++	if (!buf) return;
++	a = dma_map_single(d, buf, L1_CACHE_BYTES, DMA_TO_DEVICE);
++	emac_direct_dma = !dma_mapping_error(d, a) && a == (dma_addr_t)virt_to_phys(buf);
++	kfree(buf);
++	printk(KERN_INFO "emac: %s streaming DMA mapping\n", emac_direct_dma ? "direct" : "DMA API");
++}
++
+ static int emac_probe(struct platform_device *ofdev) {
+ 	struct net_device *ndev;
+ 	struct emac_instance *dev;
+@@ -2921,6 +2935,8 @@ static int emac_probe(struct platform_device *ofdev) {
+ 	for (i = 0; i < EMAC_BOOT_LIST_SIZE; i++)
+ 		if (emac_boot_list[i] == np) blist = &emac_boot_list[i];
+ 
++	emac_check_direct_dma(&ofdev->dev);
++
+ #ifdef EMAC_ALLOC_ON_OCM
+ 	{
+ 		phys_addr_t	phys;
+diff --git a/drivers/net/ethernet/ibm/emac/core.h b/drivers/net/ethernet/ibm/emac/core.h
+index 76738ba7358a..bec340ca341b 100644
+--- a/drivers/net/ethernet/ibm/emac/core.h
++++ b/drivers/net/ethernet/ibm/emac/core.h
+@@ -468,4 +468,27 @@ struct emac_ethtool_regs_subhdr {
+ #define EMAC4_ETHTOOL_REGS_VER		4
+ #define EMAC4SYNC_ETHTOOL_REGS_VER	5
+ 
++#include <linux/dma-map-ops.h>
++
++/* APM821xx streaming DMA: EMAC/MAL is a platform device without IOMMU or DMA
++ * offset, so a mapping is a cache sync plus the physical address. Calling
++ * arch_sync_dma_for_device() directly skips the out-of-line dma_map_page_attrs()
++ * dispatch in the per-packet paths. emac_probe() checks once that the DMA API
++ * returns the same address and falls back to it otherwise. No unmap is needed
++ * on this platform (see the note at the top of core.c). */
++extern bool emac_direct_dma;
++
++static __always_inline dma_addr_t emac_map_phys(struct device *d, phys_addr_t pa, size_t size,
++						enum dma_data_direction dir)
++{
++	if (likely(emac_direct_dma)) {
++		arch_sync_dma_for_device(pa, size, dir);
++		return (dma_addr_t)pa;
++	}
++	return dma_map_page(d, pfn_to_page(PHYS_PFN(pa)), offset_in_page(pa), size, dir);
++}
++
++#define emac_map_single(d, va, size, dir)	emac_map_phys(d, virt_to_phys(va), size, dir)
++#define emac_map_frag(d, f, size, dir) 	emac_map_phys(d, page_to_phys(skb_frag_page(f)) + skb_frag_off(f), size, dir)
++
+ #endif /* __IBM_EMAC_CORE_H */
+diff --git a/drivers/net/ethernet/ibm/emac/mal.c b/drivers/net/ethernet/ibm/emac/mal.c
+index 8a7435915955..a16bfee140be 100644
+--- a/drivers/net/ethernet/ibm/emac/mal.c
++++ b/drivers/net/ethernet/ibm/emac/mal.c
+@@ -505,7 +505,7 @@ static __always_inline void recycle_rx_skb(struct emac_instance *dev, int slot,
+ 
+ 	DBG2(dev, "recycle %d %d" NL, slot, len);
+ 	if (likely(len))
+-		dma_map_single(&dev->ofdev->dev, skbdata - NET_IP_ALIGN, SKB_DATA_ALIGN(len + NET_IP_ALIGN), DMA_FROM_DEVICE);
++		emac_map_single(&dev->ofdev->dev, skbdata - NET_IP_ALIGN, SKB_DATA_ALIGN(len + NET_IP_ALIGN), DMA_FROM_DEVICE);
+ 	dev->rx_desc[slot].data_len = 0;
+ 	wmb();
+ 	dev->rx_desc[slot].ctrl = MAL_RX_CTRL_EMPTY| MAL_RX_CTRL_INTR| (slot == (NUM_RX_BUFF-1) ? MAL_RX_CTRL_WRAP : 0);
+@@ -555,7 +555,7 @@ static __always_inline int __prepare_rx_skb(struct sk_buff *skb, struct emac_ins
+ 	dev->rx_skb[slot] = skb;
+     rx_desc->data_len = 0;
+     rx_desc->data_ptr =
+-	    dma_map_single(&dev->ofdev->dev, skb->data - NET_IP_ALIGN, dev->rx_sync_size, DMA_FROM_DEVICE) + NET_IP_ALIGN;
++	    emac_map_single(&dev->ofdev->dev, skb->data - NET_IP_ALIGN, dev->rx_sync_size, DMA_FROM_DEVICE) + NET_IP_ALIGN;
+ 	wmb();
+ 	rx_desc->ctrl = MAL_RX_CTRL_EMPTY | MAL_RX_CTRL_INTR | (slot == (NUM_RX_BUFF - 1) ? MAL_RX_CTRL_WRAP : 0);
+ 	return 0;

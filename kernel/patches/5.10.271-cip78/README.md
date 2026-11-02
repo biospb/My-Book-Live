@@ -21,6 +21,7 @@ replaced. Boots in the test slot, `mbl-boot` confirm works, integrity checks pas
 | 0019 | dw: preallocated LLI per descriptor slot | 0026 |
 | 0020 | math64: `div_u64_rem()`/`div_u64()` always inline | 0027 |
 | 0021 | EMAC: count TX descriptors exactly before filling the ring (TX hang fix) | 0028 |
+| 0022 | EMAC: direct streaming DMA mapping (no `dma_map_page_attrs()` dispatch per packet) | — |
 
 Config: [config/.config.5.10.271-cip78-mbl-510r5](config/.config.5.10.271-cip78-mbl-510r5) (slim, -O2, perf on).
 Config trap: `olddefconfig` drops `MTD_PHYSMAP_OF`; it needs `MTD_PHYSMAP=y`, `MTD_PHYSMAP_OF=y` and
@@ -72,3 +73,15 @@ SMB fixed-placement bench, medians write / read MiB/s, smbd with the splice-v3 s
 | 510r5 (hangs) | 6 | 74.0 | 98.1 | ~5 % |
 | 510r6 (0021 + diag) | 8 | 77.5 | 98.6 | ~5 % |
 | 4.19 p28 (p26 + 0028) | 4 | 77.5 | 99.7 | ~21 % |
+
+## 0022: direct streaming DMA mapping (510r7), 2026-11-02
+
+On 5.10 every `dma_map_single()` / `skb_frag_dma_map()` goes through the out-of-line `dma_map_page_attrs()`
+before the cache sync (4.19 reaches `dma_nommu_map_page` directly). 0022 maps with
+`arch_sync_dma_for_device()` + the physical address in the RX refill/recycle and TX paths; `emac_probe()`
+checks once that the DMA API returns the same address (boot log: `emac: direct streaming DMA mapping`).
+
+iperf3 at a fixed 600 Mbit/s, 3 runs: `dma_map_page_attrs` (510r5: 126-154 samples rx, 65-98 tx of 20000)
+is gone, `__dma_sync` rises by ~90 rx (the sync itself stays); CPU idle rx 25-29 -> 30-32 %, tx within noise.
+SMB 510r7: write 74.6-80.4, read 97.9-102.8 (one 77.7 outlier, as on every kernel). Integrity check OK.
+A 4.19 counterpart is not needed: 4.19 calls `dma_nommu_map_page` without the extra dispatch.
